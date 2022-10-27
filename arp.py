@@ -75,6 +75,9 @@ def solve_block_diag(A, b):
 
 @ti.func
 def rotation(a, b, c):
+    '''
+    Tait-Bryan angle in ZYX order
+    '''
     s1 = sin(a)
     s2 = sin(b)
     s3 = sin(c)
@@ -84,9 +87,9 @@ def rotation(a, b, c):
     c3 = cos(c)
 
     R = ti.Matrix([
-        [c2, -c3 * s2, s2 * s3],
-        [c1 * s2, c1 * c2 * c3 - s1 * s3, -c3 * s1 - c1 * c2 * s3],
-        [s1 * s2, c1 * s3 + c2 * c3 * s1, c1 * c3 - c2 * s1 * s3]
+        [c1 * c2, c1 * s2 * s3 - c3 * s1, s1 * s3 + c1 * c3 * s2],
+        [c2 * s1, c1 * c3 + s1 * s2 * s3, c3 * s1 * s2 - c1 * s3],
+        [-s2, c2 * s3, c2 * c3]
     ])
     return R
 
@@ -105,24 +108,24 @@ def Jw(a, b, c):
 
 
     R = ti.Matrix([
-        [c2, -c3 * s2, s2 * s3],
-        [c1 * s2, c1 * c2 * c3 - s1 * s3, -c3 * s1 - c1 * c2 * s3],
-        [s1 * s2, c1 * s3 + c2 * c3 * s1, c1 * c3 - c2 * s1 * s3]
+        [c1 * c2, c1 * s2 * s3 - c3 * s1, s1 * s3 + c1 * c3 * s2],
+        [c2 * s1, c1 * c3 + s1 * s2 * s3, c3 * s1 * s2 - c1 * s3],
+        [-s2, c2 * s3, c2 * c3]
     ])
     pR_pa = ti.Matrix([
-        [0, 0, 0],
-        [-s1 * s2, -s1 * c2 * c3 - c1 * s3, -c3 * c1 - -s1 * c2 * s3],
-        [c1 * s2, -s1 * s3 + c2 * c3 * c1, -s1 * c3 - c2 * c1 * s3]
+        [-s1 * c2, -s1 * s2 * s3 - c3 * c1, c1 * s3 + -s1 * c3 * s2],
+        [c2 * c1, -s1 * c3 + c1 * s2 * s3, c3 * c1 * s2 - -s1 * s3],
+        [0, 0, 0]
     ])
     pR_pb = ti.Matrix([
-        [-s2, -c3 * c2, c2 * s3],
-        [c1 * c2, c1 * -s2 * c3 - s1 * s3, -c3 * s1 - c1 * -s2 * s3],
-        [s1 * c2, c1 * s3 + -s2 * c3 * s1, c1 * c3 - -s2 * s1 * s3]
+        [c1 * -s2, c1 * c2 * s3 - c3 * s1, s1 * s3 + c1 * c3 * c2],
+        [-s2 * s1, c1 * c3 + s1 * c2 * s3, c3 * s1 * c2 - c1 * s3],
+        [-c2, -s2 * s3, -s2 * c3]
     ])
     pR_pc = ti.Matrix([
-        [0, s3 * s2, s2 * c3],
-        [0, c1 * c2 * -s3 - s1 * c3, s3 * s1 - c1 * c2 * c3],
-        [0, c1 * c3 + c2 * -s3 * s1, c1 * -s3 - c2 * s1 * c3]
+        [0, c1 * s2 * c3 - -s3 * s1, s1 * c3 + c1 * -s3 * s2],
+        [0, c1 * -s3 + s1 * s2 * c3, -s3 * s1 * s2 - c1 * c3],
+        [0, c2 * c3, c2 * -s3]
     ])
     ja = unskew(pR_pa @ R.transpose())
     jb = unskew(pR_pb @ R.transpose())
@@ -141,58 +144,58 @@ def J_dot(a, b, c, d1, d2, d3):
 
 
     R = ti.Matrix([
-        [c2, -c3 * s2, s2 * s3],
-        [c1 * s2, c1 * c2 * c3 - s1 * s3, -c3 * s1 - c1 * c2 * s3],
-        [s1 * s2, c1 * s3 + c2 * c3 * s1, c1 * c3 - c2 * s1 * s3]
+        [c1 * c2, c1 * s2 * s3 - c3 * s1, s1 * s3 + c1 * c3 * s2],
+        [c2 * s1, c1 * c3 + s1 * s2 * s3, c3 * s1 * s2 - c1 * s3],
+        [-s2, c2 * s3, c2 * c3]
     ])
     pR_pa = ti.Matrix([
-        [0, 0, 0],
-        [-s1 * s2, -s1 * c2 * c3 - c1 * s3, -c3 * c1 - -s1 * c2 * s3],
-        [c1 * s2, -s1 * s3 + c2 * c3 * c1, -s1 * c3 - c2 * c1 * s3]
+        [-s1 * c2, -s1 * s2 * s3 - c3 * c1, c1 * s3 + -s1 * c3 * s2],
+        [c2 * c1, -s1 * c3 + c1 * s2 * s3, c3 * c1 * s2 - -s1 * s3],
+        [0, 0, 0]
     ])
     pR_pb = ti.Matrix([
-        [-s2, -c3 * c2, c2 * s3],
-        [c1 * c2, c1 * -s2 * c3 - s1 * s3, -c3 * s1 - c1 * -s2 * s3],
-        [s1 * c2, c1 * s3 + -s2 * c3 * s1, c1 * c3 - -s2 * s1 * s3]
+        [c1 * -s2, c1 * c2 * s3 - c3 * s1, s1 * s3 + c1 * c3 * c2],
+        [-s2 * s1, c1 * c3 + s1 * c2 * s3, c3 * s1 * c2 - c1 * s3],
+        [-c2, -s2 * s3, -s2 * c3]
     ])
     pR_pc = ti.Matrix([
-        [0, s3 * s2, s2 * c3],
-        [0, c1 * c2 * -s3 - s1 * c3, s3 * s1 - c1 * c2 * c3],
-        [0, c1 * c3 + c2 * -s3 * s1, c1 * -s3 - c2 * s1 * c3]
+        [0, c1 * s2 * c3 - -s3 * s1, s1 * c3 + c1 * -s3 * s2],
+        [0, c1 * -s3 + s1 * s2 * c3, -s3 * s1 * s2 - c1 * c3],
+        [0, c2 * c3, c2 * -s3]
     ])
     R_dot = pR_pa * d1 + pR_pb * d2 + pR_pc * d3
 
     pR2_paa = ti.Matrix([
-        [0, 0, 0],
-        [-c1 * s2, -c1 * c2 * c3 - -s1 * s3, -c3 * -s1 - -c1 * c2 * s3],
-        [-s1 * s2, -c1 * s3 + c2 * c3 * -s1, -c1 * c3 - c2 * -s1 * s3]
+        [-c1 * c2, -c1 * s2 * s3 - c3 * -s1, -s1 * s3 + -c1 * c3 * s2],
+        [c2 * -s1, -c1 * c3 + -s1 * s2 * s3, c3 * -s1 * s2 - -c1 * s3],
+        [0, 0, 0]
     ])
 
     pR2_pab = ti.Matrix([
-        [0, 0, 0],
-        [-s1 * c2, -s1 * -s2 * c3 - c1 * s3, -c3 * c1 - -s1 * -s2 * s3],
-        [c1 * c2, -s1 * s3 + -s2 * c3 * c1, -s1 * c3 - -s2 * c1 * s3]
+        [-s1 * -s2, -s1 * c2 * s3 - c3 * c1, c1 * s3 + -s1 * c3 * c2],
+        [-s2 * c1, -s1 * c3 + c1 * c2 * s3, c3 * c1 * c2 - -s1 * s3],
+        [0, 0, 0]
     ])
     pR2_pbb = ti.Matrix([
-        [-c2, -c3 * -s2, -s2 * s3],
-        [c1 * -s2, c1 * -c2 * c3 - s1 * s3, -c3 * s1 - c1 * -c2 * s3],
-        [s1 * -s2, c1 * s3 + -c2 * c3 * s1, c1 * c3 - -c2 * s1 * s3]
+        [c1 * -c2, c1 * -s2 * s3 - c3 * s1, s1 * s3 + c1 * c3 * -s2],
+        [-c2 * s1, c1 * c3 + s1 * -s2 * s3, c3 * s1 * -s2 - c1 * s3],
+        [s2, -c2 * s3, -c2 * c3]
     ])
 
     pR2_pac = ti.Matrix([
-        [0, 0, 0],
-        [0, -s1 * c2 * -s3 - c1 * c3, s3 * c1 - -s1 * c2 * c3],
-        [0, -s1 * c3 + c2 * -s3 * c1, -s1 * -s3 - c2 * c1 * c3]
+        [0, -s1 * s2 * c3 - -s3 * c1, c1 * c3 + -s1 * -s3 * s2],
+        [0, -s1 * -s3 + c1 * s2 * c3, -s3 * c1 * s2 - -s1 * c3],
+        [0, 0, 0]
     ])
     pR2_pbc = ti.Matrix([
-        [0, s3 * c2, c2 * c3],
-        [0, c1 * -s2 * -s3 - s1 * c3, s3 * s1 - c1 * -s2 * c3],
-        [0, c1 * c3 + -s2 * -s3 * s1, c1 * -s3 - -s2 * s1 * c3]
+        [0, c1 * c2 * c3 - -s3 * s1, s1 * c3 + c1 * -s3 * c2],
+        [0, c1 * -s3 + s1 * c2 * c3, -s3 * s1 * c2 - c1 * c3],
+        [0, -s2 * c3, -s2 * -s3]
     ])
     pR2_pcc = ti.Matrix([
-        [0, c3 * s2, s2 * -s3],
-        [0, c1 * c2 * -c3 - s1 * -s3, c3 * s1 - c1 * c2 * -s3],
-        [0, c1 * -s3 + c2 * -c3 * s1, c1 * -c3 - c2 * s1 * -s3]
+        [0, c1 * s2 * -s3 - -c3 * s1, s1 * -s3 + c1 * -c3 * s2],
+        [0, c1 * -c3 + s1 * s2 * -s3, -c3 * s1 * s2 - c1 * -s3],
+        [0, c2 * -s3, c2 * -c3]
     ])
 
     dpR_pa = pR2_paa * d1 + pR2_pab * d2 + pR2_pac * d3
@@ -247,16 +250,16 @@ class Cube:
         # self.set_M()
         self.gen_v()
         self.gen_id()
-        self.substep = self.midpoint if Newton_Euler else self.lagrange_explicit_euler
+        self.substep = self.midpoint if Newton_Euler else self.lagrange_midpoint
         
     @ti.kernel
     def initialize(self):
         self.v[None] = ti.Vector.zero(float , 3)
         self.R[None] = ti.Matrix.identity(float, 3)
         self.set_Mc()
-        # self.q_dot[None][3] = 100.0
-        self.q_dot[None][4] = 100.0
-        self.q_dot[None][5] = 0.0
+        self.q_dot[None][3] = 10.0
+        # self.q_dot[None][4] = 100.0
+        self.q_dot[None][5] = 10.0
 
     @ti.func
     def set_Mc(self):
@@ -292,41 +295,47 @@ class Cube:
         for i in range(8):
             self.v_transformed[i] = self.R[None] @ self.vertices[i] + self.p[None]
 
-    @ti.kernel
-    def lagrange_explicit_euler(self):
-        dt = 1e-3
-        J = J(self.q[None][3], self.q[None][4], self.q[None][5])
+    @ti.func
+    def lagrange_explicit_euler(self, q_dot, q):
+        '''
+        ret = dydt
+        '''
+        J = J(q[3], q[4], q[5])
         
         M = J.transpose() @ self.Mc[None] @ J
-        tiled_omega_BR = skew(Jw(self.q[None][3], self.q[None][4], self.q[None][5]) @ ti.Vector([self.q_dot[None][3], self.q_dot[None][4], self.q_dot[None][5]]))
+        tiled_omega_BR = skew(Jw(q[3], q[4], q[5]) @ ti.Vector([q_dot[3], q_dot[4], q_dot[5]]))
         tiled_omega = block_diag(ti.Matrix.zero(float, 3,3), tiled_omega_BR)
-        C = (J.transpose() @ self.Mc[None] @ J_dot(self.q[None][3], self.q[None][4], self.q[None][5], self.q_dot[None][3], self.q_dot[None][4], self.q_dot[None][5]) + J.transpose() @ tiled_omega @ self.Mc[None] @ J ) @ self.q_dot[None]
+        C = (J.transpose() @ self.Mc[None] @ J_dot(q[3], q[4], q[5], q_dot[3], q_dot[4], q_dot[5]) + J.transpose() @ tiled_omega @ self.Mc[None] @ J ) @ q_dot
 
         # sovle M q.. + C = Q
-        self.q[None] += self.q_dot[None] * dt
-        self.q_dot[None] += solve_block_diag(M, -C) * dt
+
+        # q += q_dot
+        # q_dot += solve_block_diag(M, -C)
         
-        r = rotation(self.q[None][3], self.q[None][4], self.q[None][5])
-        p = ti.Vector([self.q[None][0], self.q[None][1], self.q[None][2]])
-        for i in ti.static(range(8)):
-            self.v_transformed[i] = r @ self.vertices[i] + p
+        return q_dot, solve_block_diag(M, -C)
         
 
-    # @ti.kernel
-    # def lagrange_midpoint(self):
-    #     '''
-    #     Lagrange Formulation
-    #     6 DoFs all stacked together as q
-    #     3 COM velocities + 3 euler angles (rotation X1 Z2 X3)
-    #     '''
-    #     J = J(self.q[3], self.q[4], self.q[5])
-    #     M = J.T @ self.Mc[None] @ J
-    #     tiled_omega_BR = skew(Jw(self.q[3], self.q[4], self.q[5]) @ self.q_dot[None])
-    #     tiled_omega = block_diag(ti.Matrix.zero(float, 3,3), tiled_omega_BR)
-    #     C = (J.T @ self.Mc[None] @ self.J_dot[None] + J.T @ tiled_omega @ self.Mc[None] @ J ) @ self.q_dot
-    #     # Q = ti.Vector.zero(float, 6)
+    @ti.kernel
+    def lagrange_midpoint(self):
+        '''
+        Lagrange Formulation
+        6 DoFs all stacked together as q
+        3 COM velocities + 3 euler angles (rotation X1 Z2 X3)
+        '''
+        dt = 1e-3
+        dq, dq_dot = self.lagrange_explicit_euler(self.q_dot[None], self.q[None])
         
-        
+        q_mid = self.q[None] + dq * dt / 2
+        q_dot_mid = self.q_dot[None] + dq_dot * dt / 2
+
+        dq, dq_dot = self.lagrange_explicit_euler(q_dot_mid, q_mid)
+        self.q[None] += dq *dt
+        self.q_dot[None] += dq_dot * dt
+        r = rotation(self.q[None][3], self.q[None][4], self.q[None][5])
+        p = ti.Vector([self.q[None][0], self.q[None][1], self.q[None][2]])
+
+        for i in ti.static(range(8)):
+            self.v_transformed[i] = r @ self.vertices[i] + p
         
     def link(self, cube):
         # self.parent.append(cube)
