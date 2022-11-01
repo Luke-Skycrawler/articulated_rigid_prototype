@@ -8,11 +8,9 @@ from fractal3d_ggui import dot
 
 ti.init(arch = ti.cuda, default_fp = ti.f32)
 
-ball_radius = 0.3
-ball_center = ti.Vector.field(3, dtype=float, shape=(1, ))
-ball_center[0] = [0, 0, 0]
 delta = 0.08
-
+per_trace = 10
+trajectory = ti.Vector.field(3, float, shape = (80))
 @ti.func
 def skew(r):
     ret = ti.Matrix.zero(float, 3, 3)
@@ -118,8 +116,8 @@ def Jw(a, b, c):
         [0, 0, 0]
     ])
     pR_pb = ti.Matrix([
-        [c1 * -s2, c1 * c2 * s3 - c3 * s1, s1 * s3 + c1 * c3 * c2],
-        [-s2 * s1, c1 * c3 + s1 * c2 * s3, c3 * s1 * c2 - c1 * s3],
+        [c1 * -s2, c1 * c2 * s3, c1 * c3 * c2],
+        [-s2 * s1, s1 * c2 * s3, c3 * s1 * c2],
         [-c2, -s2 * s3, -s2 * c3]
     ])
     pR_pc = ti.Matrix([
@@ -154,8 +152,8 @@ def J_dot(a, b, c, d1, d2, d3):
         [0, 0, 0]
     ])
     pR_pb = ti.Matrix([
-        [c1 * -s2, c1 * c2 * s3 - c3 * s1, s1 * s3 + c1 * c3 * c2],
-        [-s2 * s1, c1 * c3 + s1 * c2 * s3, c3 * s1 * c2 - c1 * s3],
+        [c1 * -s2, c1 * c2 * s3, c1 * c3 * c2],
+        [-s2 * s1, s1 * c2 * s3, c3 * s1 * c2],
         [-c2, -s2 * s3, -s2 * c3]
     ])
     pR_pc = ti.Matrix([
@@ -172,13 +170,13 @@ def J_dot(a, b, c, d1, d2, d3):
     ])
 
     pR2_pab = ti.Matrix([
-        [-s1 * -s2, -s1 * c2 * s3 - c3 * c1, c1 * s3 + -s1 * c3 * c2],
-        [-s2 * c1, -s1 * c3 + c1 * c2 * s3, c3 * c1 * c2 - -s1 * s3],
+        [-s1 * -s2, -s1 * c2 * s3, -s1 * c3 * c2],
+        [-s2 * c1, c1 * c2 * s3, c3 * c1 * c2],
         [0, 0, 0]
     ])
     pR2_pbb = ti.Matrix([
-        [c1 * -c2, c1 * -s2 * s3 - c3 * s1, s1 * s3 + c1 * c3 * -s2],
-        [-c2 * s1, c1 * c3 + s1 * -s2 * s3, c3 * s1 * -s2 - c1 * s3],
+        [c1 * -c2, c1 * -s2 * s3,c1 * c3 * -s2],
+        [-c2 * s1, s1 * -s2 * s3, c3 * s1 * -s2],
         [s2, -c2 * s3, -c2 * c3]
     ])
 
@@ -188,8 +186,8 @@ def J_dot(a, b, c, d1, d2, d3):
         [0, 0, 0]
     ])
     pR2_pbc = ti.Matrix([
-        [0, c1 * c2 * c3 - -s3 * s1, s1 * c3 + c1 * -s3 * c2],
-        [0, c1 * -s3 + s1 * c2 * c3, -s3 * s1 * c2 - c1 * c3],
+        [0, c1 * c2 * c3, c1 * -s3 * c2],
+        [0, s1 * c2 * c3, -s3 * s1 * c2],
         [0, -s2 * c3, -s2 * -s3]
     ])
     pR2_pcc = ti.Matrix([
@@ -257,9 +255,9 @@ class Cube:
         self.v[None] = ti.Vector.zero(float , 3)
         self.R[None] = ti.Matrix.identity(float, 3)
         self.set_Mc()
-        self.q_dot[None][3] = 10.0
-        # self.q_dot[None][4] = 100.0
-        self.q_dot[None][5] = 10.0
+        self.q_dot[None][3] = self.omega[None][0]
+        self.q_dot[None][4] = self.omega[None][1]
+        self.q_dot[None][5] = self.omega[None][2]
 
     @ti.func
     def set_Mc(self):
@@ -322,7 +320,7 @@ class Cube:
         6 DoFs all stacked together as q
         3 COM velocities + 3 euler angles (rotation X1 Z2 X3)
         '''
-        dt = 1e-3
+        dt = 1e-4
         dq, dq_dot = self.lagrange_explicit_euler(self.q_dot[None], self.q[None])
         
         q_mid = self.q[None] + dq * dt / 2
@@ -349,7 +347,7 @@ class Cube:
     
         
     @ti.kernel
-    def gen_id(self ):
+    def gen_id(self):
         self.faces[0] = ti.Vector([0,1,3,2])
         self.faces[1] = ti.Vector([4,5,1,0])
         self.faces[2] = ti.Vector([2,3,7,6])
@@ -365,7 +363,14 @@ class Cube:
             self.indices[i * 6 + 5] = self.faces[i][0]
         
 
-    
+arr = np.zeros(shape = (10, 8, 3))
+def booknote(a):
+    global arr
+    arr[:-1] = arr[1:]
+    arr[-1] = a
+    trajectory.from_numpy(arr.reshape(-1, 3))
+    # return arr.reshape(-1,3)
+
 def main():
     window = ti.ui.Window("Articulated Multibody Simualtion", (800, 800), vsync = True)
     canvas = window.get_canvas()
@@ -375,9 +380,10 @@ def main():
     camera_pos = np.array([0.0,0.0,3.0])
     camera_dir = np.array([0.0, 0.0, -1.0])
     
-    cube = Cube(omega = [100.0, 100.0, 0.0])
+    cube = Cube(omega = [10.0, 10.0, 10.0])
     
     mouse_staled = np.zeros(2, dtype = np.float32)
+    ts = 0
     while window.running:
         mouse = np.array([*window.get_cursor_pos(), 0.0])
         if window.is_pressed('a'):
@@ -407,11 +413,15 @@ def main():
         
         scene.point_light(pos = (0,1,2), color = (1,1,1))
         scene.ambient_light((0.5, 0.5, 0.5))
-
-        cube.substep()
+        for i in range(10):
+            cube.substep()
 
         scene.mesh(cube.v_transformed, cube.indices, two_sided = True, show_wireframe = False)            
+        if ts % per_trace == 0:
+            t = booknote(cube.v_transformed.to_numpy())
+        scene.particles(trajectory, radius = 0.01, color = (1.0, 0.0, 0.0))
+        scene.particles(cube.v_transformed, radius = 0.05, color = (1.0, 0.0, 0.0))
         canvas.scene(scene)
         window.show()
-
+        ts += 1
 main()
