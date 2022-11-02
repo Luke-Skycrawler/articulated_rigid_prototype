@@ -3,7 +3,6 @@ import taichi as ti
 from taichi import cos, sin
 import numpy as np
 
-from fractal3d_ggui import dot
 # FIXME: drifting of the R matrix
 
 ti.init(arch = ti.cuda, default_fp = ti.f32)
@@ -11,6 +10,30 @@ ti.init(arch = ti.cuda, default_fp = ti.f32)
 delta = 0.08
 per_trace = 10
 trajectory = ti.Vector.field(3, float, shape = (80))
+
+# @ti.func
+# def dot_block_diag(A, x):
+#     A1 = ti.Matrix.zero(float, 3, 3)
+#     A2 = ti.Matrix.zero(float, 3, 3)
+#     x1 = ti.Vector.zero(float, 3)
+#     x2 = ti.Vector.zero(float, 3)
+#     ret =ti.Vector.zero(float, 6)
+#     for i, j in ti.static(ti.ndrange(3,3)):
+#         A1[i, j] = A[i, j]
+#         A2[i, j] = A[i + 3, j + 3]
+#     for i in ti.static(range(3)):
+#         x1[i] = x[i]
+#         x2[i] = x[i + 3] 
+    
+#     r1 = A1 @ x1
+#     r2 = A2 @ x2
+
+#     for i in ti.static(range(3)):
+#         ret[i] = r1[i]
+#         ret[i + 3] = r2[i]
+        
+#     return ret
+    
 @ti.func
 def skew(r):
     ret = ti.Matrix.zero(float, 3, 3)
@@ -22,13 +45,13 @@ def skew(r):
     ret[2,1] = +r[0]
     return ret
 
-@ti.func
-def block_diag(A, B):
-    ret = ti.Matrix.zero(float, 6, 6)
-    for i, j in ti.static(ti.ndrange(3, 3)):
-        ret[i, j] = A[i, j]
-        ret[i + 3, j + 3] = B[i, j]
-    return ret
+# @ti.func
+# def block_diag(A, B):
+#     ret = ti.Matrix.zero(float, 6, 6)
+#     for i, j in ti.static(ti.ndrange(3, 3)):
+#         ret[i, j] = A[i, j]
+#         ret[i + 3, j + 3] = B[i, j]
+#     return ret
 
 @ti.func
 def unskew(R):
@@ -47,29 +70,29 @@ def f(p, q):
 def tau(p, q):
     return ti.Vector.zero(float, 3)
 
-@ti.func
-def solve_block_diag(A, b):
-    # assert A.shape[0] == 6 and A.shape[1] == 6 and b.shape[0] == 6
-    # assert A is block diagonal matrix
-    A1 = ti.Matrix.zero(float, 3, 3)
-    A2 = ti.Matrix.zero(float, 3, 3)
-    for i, j in ti.static(ti.ndrange(3,3)):
-        A1[i, j] = A[i, j]
-        A2[i, j] = A[i + 3, j + 3]
+# @ti.func
+# def solve_block_diag(A, b):
+#     # assert A.shape[0] == 6 and A.shape[1] == 6 and b.shape[0] == 6
+#     # assert A is block diagonal matrix
+#     A1 = ti.Matrix.zero(float, 3, 3)
+#     A2 = ti.Matrix.zero(float, 3, 3)
+#     for i, j in ti.static(ti.ndrange(3,3)):
+#         A1[i, j] = A[i, j]
+#         A2[i, j] = A[i + 3, j + 3]
 
-    b1 = ti.Vector.zero(float, 3) 
-    b2 = ti.Vector.zero(float, 3) 
-    for i in ti.static(range(3)):
-        b1[i] = b[i]
-        b2[i] = b[i + 3]
-    x1 = A1.inverse() @ b1
-    x2 = A2.inverse() @ b2
-    ret = ti.Vector.zero(float, 6)
-    for i in ti.static(range(3)):
-        ret[i] = x1[i]
-        ret[i + 3] = x2[i]
+#     b1 = ti.Vector.zero(float, 3) 
+#     b2 = ti.Vector.zero(float, 3) 
+#     for i in ti.static(range(3)):
+#         b1[i] = b[i]
+#         b2[i] = b[i + 3]
+#     x1 = A1.inverse() @ b1
+#     x2 = A2.inverse() @ b2
+#     ret = ti.Vector.zero(float, 6)
+#     for i in ti.static(range(3)):
+#         ret[i] = x1[i]
+#         ret[i + 3] = x2[i]
 
-    return ret
+#     return ret
 
 @ti.func
 def rotation(a, b, c):
@@ -203,13 +226,14 @@ def J_dot(a, b, c, d1, d2, d3):
     ja_dot = unskew(dpR_pa @ R.transpose() + pR_pa @ R_dot.transpose())
     jb_dot = unskew(dpR_pb @ R.transpose() + pR_pb @ R_dot.transpose())
     jc_dot = unskew(dpR_pc @ R.transpose() + pR_pc @ R_dot.transpose())
-    return block_diag(ti.Matrix.zero(float, 3, 3), ti.Matrix.cols([ja_dot, jb_dot, jc_dot]))
+    return ti.Matrix.cols([ja_dot, jb_dot, jc_dot])
+    # return block_diag(ti.Matrix.zero(float, 3, 3), ti.Matrix.cols([ja_dot, jb_dot, jc_dot]))
 
-@ti.func
-def J(a, b, c):
-    ret = ti.Matrix.zero(float, 6, 6)
-    jw = Jw(a, b, c)
-    return block_diag(ti.Matrix.identity(float, 3), jw)
+# @ti.func
+# def J(a, b, c):
+#     ret = ti.Matrix.zero(float, 6, 6)
+#     jw = Jw(a, b, c)
+#     return block_diag(ti.Matrix.identity(float, 3), jw)
 
 @ti.data_oriented
 class Cube:
@@ -225,7 +249,7 @@ class Cube:
         self.euler = ti.field(float, shape = (3))
         self.euler_dot = ti.field(float, shape = (3))
         # self.Jw = ti.Matrix.field(3,3,float, shape=())
-        self.Mc = ti.Matrix.field(6, 6, float, shape=())
+        self.Mc = ti.field(float, shape=(6, 6))
         
         self.p[None] = ti.Vector(pos)
         self.omega[None] = ti.Vector(omega)
@@ -261,9 +285,10 @@ class Cube:
 
     @ti.func
     def set_Mc(self):
-        self.Mc[None] = ti.Matrix.identity(float, 6) * self.m        
-        for i in ti.static(range(3, 6)):
-            self.Mc[None][i, i] = self.Ic
+        for i in ti.static(range(3)):
+            self.Mc[i, i] = self.m
+            self.Mc[i + 3, i + 3] = self.Ic
+            
 
             
     @ti.kernel
@@ -297,20 +322,29 @@ class Cube:
     def lagrange_explicit_euler(self, q_dot, q):
         '''
         ret = dydt
+        treat rotation and translation seperately in two 3*3 jacobian matrix
         '''
-        J = J(q[3], q[4], q[5])
+        _Jw = Jw(q[3], q[4], q[5])
         
-        M = J.transpose() @ self.Mc[None] @ J
-        tiled_omega_BR = skew(Jw(q[3], q[4], q[5]) @ ti.Vector([q_dot[3], q_dot[4], q_dot[5]]))
-        tiled_omega = block_diag(ti.Matrix.zero(float, 3,3), tiled_omega_BR)
-        C = (J.transpose() @ self.Mc[None] @ J_dot(q[3], q[4], q[5], q_dot[3], q_dot[4], q_dot[5]) + J.transpose() @ tiled_omega @ self.Mc[None] @ J ) @ q_dot
+        # M = block_diag(ti.Matrix.identity(float, 3) * self.m, _Jw.transpose() @ _Jw * self.Ic)
+        # M = J.transpose() @ self.Mc[None] @ J
+        tiled_omega_BR = skew(_Jw @ ti.Vector([q_dot[3], q_dot[4], q_dot[5]]))
+        # tiled_omega = block_diag(ti.Matrix.zero(float, 3,3), tiled_omega_BR)
+        # C = dot_block_diag(block_diag(ti.Matrix.zero(float, 3, 3), _Jw.transpose() * self.Ic @ J_dot(q[3], q[4], q[5], q_dot[3], q_dot[4], q_dot[5]) + _Jw.transpose() @ tiled_omega_BR * self.Ic @ _Jw), q_dot)
+        
 
         # sovle M q.. + C = Q
 
         # q += q_dot
         # q_dot += solve_block_diag(M, -C)
         
-        return q_dot, solve_block_diag(M, -C)
+        q_dot_omega = ti.Vector([q_dot[3], q_dot[4], q_dot[5]])
+        # q_dot_v = ti.Vector([q_dot[0], q_dot[1], q_dot[2]])
+        C_omega = (_Jw.transpose() * self.Ic @ J_dot(q[3], q[4], q[5], q_dot[3], q_dot[4], q_dot[5]) + _Jw.transpose() @ tiled_omega_BR * self.Ic @ _Jw) @ q_dot_omega
+        M_omega = _Jw.transpose() @ _Jw * self.Ic
+        
+        __q = M_omega.inverse() @ -C_omega
+        return q_dot, ti.Vector([0,0,0, __q[0], __q[1], __q[2]])
         
 
     @ti.kernel
