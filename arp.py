@@ -11,7 +11,7 @@ delta = 0.08
 per_trace = 10
 trajectory = ti.Vector.field(3, float, shape=(80))
 
-n_cubes = 2
+n_cubes = 1
 n_dofs = 3 * n_cubes + 3
 n_3x3blocks = 5 * n_cubes - 3
 # Jw_k = ti.linalg.SparseMatrix(n = 3, m = n_dofs, dtype = float)
@@ -19,19 +19,22 @@ n_3x3blocks = 5 * n_cubes - 3
 
 # triplets = ti.Vector.ndarray(n = 3, dtype = float, shape = n_3x3blocks * 9, layout=ti.Layout.AOS)
 
-Jw_k = np.zeros((3, n_dofs), dtype = np.float32)
-Jw_pk = np.zeros((3, n_dofs), dtype = np.float32)
-Jv_k = np.zeros((3, n_dofs), dtype = np.float32)
+class Globals:
+    def __init__(self):
+        
+        self.Jw_k = np.zeros((3, n_dofs), dtype = np.float32)
+        self.Jw_pk = np.zeros((3, n_dofs), dtype = np.float32)
+        self.Jv_k = np.zeros((3, n_dofs), dtype = np.float32)
 
-Jw_pk_dot =np.zeros((3, n_dofs), dtype = np.float32)
-Jw_k_dot = np.zeros((3, n_dofs), dtype = np.float32)
-Jv_k_dot = np.zeros((3, n_dofs), dtype = np.float32)
+        self.Jw_pk_dot =np.zeros((3, n_dofs), dtype = np.float32)
+        self.Jw_k_dot = np.zeros((3, n_dofs), dtype = np.float32)
+        self.Jv_k_dot = np.zeros((3, n_dofs), dtype = np.float32)
 
-M_ul = np.zeros((n_dofs, n_dofs), np.float32)
-M_br = np.zeros_like(M_ul)
-C_ul = np.zeros_like(M_ul)
-C_br = np.zeros_like(M_ul)
+        self.M = np.zeros((n_dofs, n_dofs), np.float32)
+        self.C = np.zeros_like(self.M)
 
+        self.q_dot = np.zeros((n_dofs), np.float32)
+globals = Globals()
 
 # @ti.func
 # def dot_block_diag(A, x):
@@ -539,9 +542,9 @@ class Cube:
     def fill_Jvk(self, Jvk):
         if self.parent is not None:
             self.coeff_Jw_pk_Jw_k(self.a1, self.a2)
-            Jvk = Jvk - self.a1 @ Jw_pk - self.a2 @ Jw_k
+            Jvk = Jvk - self.a1 @ globals.Jw_pk - self.a2 @ globals.Jw_k
         else:
-            pass
+            Jvk[:, : 3] = np.identity(3, np.float32)
     
     @ti.kernel
     def fill_J_dot_related(self, a1_dot: ti.types.ndarray(), a2_dot: ti.types.ndarray(), Jw_hat: ti.types.ndarray(), Jw_dot_hat: ti.types.ndarray(), tiled_omega_BR: ti.types.ndarray()):
@@ -587,12 +590,12 @@ class Cube:
             tiled_omega_BR[i, j] = _tiled_omega_BR[i,j]
         
     def aggregate_JkT_Mck_Jk(self):
-        global M_ul, M_br
-        ul = Jv_k.T @ Jv_k * self.m
-        br = Jw_k.T @ Jw_k * self.Ic
+        global globals
+        ul = globals.Jv_k.T @ globals.Jv_k * self.m
+        br = globals.Jw_k.T @ globals.Jw_k * self.Ic
         # M q.. + C = Q
-        M_ul += ul
-        M_br += br
+        globals.M += ul + br
+        # print(globals.M, ul, br)
 
 
     def aggregate_JkT_Mck_Jk_dot(self, ):
@@ -600,7 +603,7 @@ class Cube:
         fill Jw_dot, Jv_dot
         
         '''
-        global M_ul, M_br, C_ul, C_br, Jw_pk_dot, Jw_k_dot, Jv_k_dot, Jw_k, Jw_pk, Jv_k
+        global globals
         a1_dot = np.zeros_like(self.a1)
         a2_dot = np.zeros_like(self.a2)
         Jw_dot_hat = np.zeros((3, 3), np.float32)
@@ -610,34 +613,96 @@ class Cube:
         self.fill_J_dot_related(a1_dot, a2_dot, Jw_hat, Jw_dot_hat, tiled_omega_BR)
         R0_pk_dot = np.zeros((3,3), np.float32) if self.parent is None else self.parent.R0_dot.to_numpy()
         R0_pk = np.identity(3, dtype = np.float32) if self.parent is None else self.parent.R0.to_numpy()
-        Jw_k_dot = Jw_pk_dot
-        Jw_k_dot[:, (self.id + 1) * 3: (self.id + 2) * 3] += R0_pk_dot @ Jw_hat + R0_pk @ Jw_dot_hat
+        globals.Jw_k_dot = globals.Jw_pk_dot
+        globals.Jw_k_dot[:, (self.id + 1) * 3: (self.id + 2) * 3] += R0_pk_dot @ Jw_hat + R0_pk @ Jw_dot_hat
         # FIXME: offset, fixed
         # FIXME: change R0 and R0 dot to numpy arrays, fixed: not possible
-        Jv_k_dot = Jv_k_dot - self.a1 @ Jw_pk_dot - self.a2 @ Jw_k_dot - a1_dot @ Jw_pk - a2_dot @ Jw_k 
+        globals.Jv_k_dot = globals.Jv_k_dot - self.a1 @ globals.Jw_pk_dot - self.a2 @ globals.Jw_k_dot - a1_dot @ globals.Jw_pk - a2_dot @ globals.Jw_k 
 
-        ul = Jv_k.T @ Jv_k_dot * self.m
-        br = Jw_k.T @ (Jw_k_dot + tiled_omega_BR @ Jw_k) * self.Ic
-        C_ul += ul
-        C_br += br
+        ul = globals.Jv_k.T @ globals.Jv_k_dot * self.m
+        br = globals.Jw_k.T @ (globals.Jw_k_dot + tiled_omega_BR @ globals.Jw_k) * self.Ic
+        globals.C += ul
+        globals.C += br
+
+    @ti.kernel
+    def update_q_dot(self, q__: ti.types.ndarray()):
+        i0 = (self.id + 1) * 3
+        for i in ti.static(range(3)):
+            self.q_dot[None][i + 3] += q__[i0 + i, 0]
+
+    @ti.kernel
+    def update_q(self, dt: float):
+        self.q[None] += self.q_dot[None] * dt
+
+    def traverse(self, q__, dt = 1e-4):
+        '''
+        recursively apply q..
+        try explicit first 
+        '''
+        self.update_q(dt)
+        self.update_q_dot(q__)
+        for c in self.children:
+            c.traverse()
+    
+    def q_dot_assemble(self):
+        _q_dot = self.q_dot.to_numpy()
+        
+        q_dot_arr = _q_dot if self.parent is None else _q_dot[3:] 
+        for c in self.children:
+            arr = c.q_dot_assemble()
+            q_dot_arr = np.hstack([q_dot_arr, arr])
+        return q_dot_arr
+
+    @ti.kernel
+    def project_vertices(self, dx: ti.types.ndarray()):     
+        # dt = 1e-4
+        # for i in ti.static(range(3)):
+        #     self.p[None][i] += dx[i, 0]    
+            # FIXME: dx shape probably wrong 
+
+        for i in ti.static(range(8)):
+            self.v_transformed[i] = self.R0[None] @ self.vertices[i] + self.p[None]
+        # print(self.p[None], self.R0[None])
 
     def top_down(self):
-        global M_ul, M_br, C_ul, C_br, Jw_pk_dot, Jw_k_dot, Jv_k_dot, Jw_k, Jw_pk, Jv_k
+        global globals
+        dt = 1e-4
+        if self.parent is None:
+            globals.q_dot = self.q_dot_assemble().reshape((-1, 1))
+            # print(globals.q_dot)
+            globals.Jv_k = np.zeros_like(globals.Jv_k)
+            globals.Jw_k = np.zeros_like(globals.Jv_k)
+            globals.Jw_pk = np.zeros_like(globals.Jv_k)
 
-        Jw_k = Jw_pk
-        self.fill_Jwk(Jw_k)
-        self.fill_Jvk(Jv_k)
+            globals.Jv_k_dot = np.zeros_like(globals.Jv_k)
+            globals.Jw_k_dot = np.zeros_like(globals.Jv_k)
+            globals.Jw_pk_dot = np.zeros_like(globals.Jv_k)
+
+            globals.M = np.zeros_like(globals.M)
+            globals.C = np.zeros_like(globals.C)
+
+        globals.Jw_k = globals.Jw_pk
+        self.fill_Jwk(globals.Jw_k)
+        self.fill_Jvk(globals.Jv_k)
         self.aggregate_JkT_Mck_Jk()
         self.aggregate_JkT_Mck_Jk_dot()
+        globals.Jw_pk_dot = globals.Jw_k_dot
+        globals.Jw_pk = globals.Jw_k
 
-        Jw_pk_dot = Jw_k
-        Jw_pk = Jw_k
+        # self.substep()
+        dxc = globals.Jv_k @ globals.q_dot * dt
+        self.project_vertices(dxc)
 
-        self.substep()
         # FIXME: support for tree (now only suitable for chain)
         for c in self.children:
             c.top_down()
 
+        if self.parent is None:
+            # root do the finish-up
+            q__ = np.linalg.solve(globals.M, -globals.C @ globals.q_dot)
+            self.traverse(q__ * dt)
+            
+            
 
 arr = np.zeros(shape=(10, 8, 3))
 
@@ -661,7 +726,7 @@ def main():
     camera_dir = np.array([0.0, 0.0, -1.0])
 
     cube = Cube(0, omega=[10.0, 10.0, 1.0])
-    link = Cube(1, omega=[0., 0., 0.], pos = [-1., -1., -1.], parent= cube)
+    # link = Cube(1, omega=[0., 0., 0.], pos = [-1., -1., -1.], parent= cube)
     root = cube
 
     mouse_staled = np.zeros(2, dtype=np.float32)
@@ -700,16 +765,17 @@ def main():
 
         scene.mesh(cube.v_transformed, cube.indices,
                    two_sided=True, show_wireframe=False)
-        scene.mesh(link.v_transformed, link.indices, two_sided=True, show_wireframe=False)
+        # scene.mesh(link.v_transformed, link.indices, two_sided=True, show_wireframe=False)
 
         if ts % per_trace == 0:
             t = booknote(cube.v_transformed.to_numpy())
         scene.particles(trajectory, radius=0.01, color=(1.0, 0.0, 0.0))
         scene.particles(cube.v_transformed, radius=0.05, color=(1.0, 0.0, 0.0))
-        scene.particles(link.v_transformed, radius=0.05, color=(1.0, 0.0, 0.0))
+        # scene.particles(link.v_transformed, radius=0.05, color=(1.0, 0.0, 0.0))
         canvas.scene(scene)
         window.show()
         ts += 1
+        # quit()
 
 
 main()
