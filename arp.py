@@ -11,7 +11,7 @@ delta = 0.08
 per_trace = 10
 trajectory = ti.Vector.field(3, float, shape=(80))
 
-n_cubes = 1
+n_cubes = 2
 n_dofs = 3 * n_cubes + 3
 n_3x3blocks = 5 * n_cubes - 3
 # Jw_k = ti.linalg.SparseMatrix(n = 3, m = n_dofs, dtype = float)
@@ -352,8 +352,8 @@ class Cube:
         # self.Jw = ti.Matrix.field(3,3,float, shape=())
         # self.Mc = ti.field(float, shape=(6, 6))
 
-        self.p[None] = ti.Vector(pos)
-        self.omega[None] = ti.Vector(omega)
+
+        self.initial_state = [pos, omega]
         # constants
         self.scale = scale
         self.m = 1.0
@@ -367,7 +367,10 @@ class Cube:
         self.indices = ti.field(ti.i32, shape=(3 * 12))
         self.faces = ti.Vector.field(4, ti.i32, shape=(6))
 
-        self.initialize()
+        # self.p[None] = ti.Vector(pos)
+        # self.omega[None] = ti.Vector(omega)
+        # self.initialize()
+
         # self.set_Ic()
         # self.set_M()
         self.gen_v()
@@ -376,22 +379,30 @@ class Cube:
         self.parent = parent
         self.r_pkl_hat = self.vertices[0]
         # parent center to link
-        self.r_lk_hat = -self.vertices[7]
+        # self.r_lk_hat = -self.vertices[7]
+        self.r_lk_hat = ti.Vector([0.0, 0.0, 0.0], float)
         # link to center
         self.children = []
         if self.parent is not None:
             self.parent.children.append(self)
 
+        self.reset()
         self.substep = self.midpoint if Newton_Euler else self.lagrange_midpoint
 
     @ti.kernel
     def initialize(self):
         self.v[None] = ti.Vector.zero(float, 3)
         self.R[None] = ti.Matrix.identity(float, 3)
+
+        self.R0[None] = ti.Matrix.identity(float, 3)
+        self.R0_dot[None] = ti.Matrix.zero(float, 3, 3)
+
         # self.set_Mc()
         # self.q_dot[None][0] = 1.0
         for k in ti.static(range(3)):
             self.q[None][k] = self.p[None][k]
+            self.q[None][k + 3] = 0.0
+            self.q_dot[None][k] = 0.0
         self.q_dot[None][3] = self.omega[None][0]
         self.q_dot[None][4] = self.omega[None][1]
         self.q_dot[None][5] = self.omega[None][2]
@@ -528,8 +539,6 @@ class Cube:
         self.R0[None] = R0
         for i, j in ti.static(ti.ndrange(3, 3)):
             Jw_k[i, j + 3 * (self.id + 1)] = dJw[i, j]
-        # fill_3x3(Jw_k, dJw, self.id + 1)
-        # fill_3x3(self.R0, R0, 0)
 
     @ti.kernel
     def coeff_Jw_pk_Jw_k(self, a1: ti.types.ndarray(), a2: ti.types.ndarray()):
@@ -543,15 +552,14 @@ class Cube:
             a1[i, j] = _a1[i, j]
             a2[i, j] = _a2[i, j]
 
-        # fill_3x3(a1, _a1, 0)
-        # fill_3x3(a2, _a2, 0)
 
-    def fill_Jvk(self, Jvk):
+    def fill_Jvk(self):
+        global globals
         if self.parent is not None:
             self.coeff_Jw_pk_Jw_k(self.a1, self.a2)
-            Jvk = Jvk - self.a1 @ globals.Jw_pk - self.a2 @ globals.Jw_k
+            globals.Jv_k += - self.a1 @ globals.Jw_pk - self.a2 @ globals.Jw_k
         else:
-            Jvk[:, : 3] = np.identity(3, np.float32)
+            globals.Jv_k[:, : 3] = np.identity(3, np.float32)
 
     @ti.kernel
     def fill_J_dot_related(self, a1_dot: ti.types.ndarray(), a2_dot: ti.types.ndarray(), Jw_hat: ti.types.ndarray(), Jw_dot_hat: ti.types.ndarray(), tiled_omega_BR: ti.types.ndarray()):
@@ -655,7 +663,7 @@ class Cube:
         self.update_q(dt)
         self.update_q_dot(q__)
         for c in self.children:
-            c.traverse()
+            c.traverse(q__, dt)
 
     def q_dot_assemble(self):
         _q_dot = self.q_dot.to_numpy()
@@ -696,7 +704,9 @@ class Cube:
 
         globals.Jw_k = globals.Jw_pk
         self.fill_Jwk(globals.Jw_k)
-        self.fill_Jvk(globals.Jv_k)
+        self.fill_Jvk()
+        # if self.id == 1:
+        #     print(globals.Jv_k)
         self.aggregate_JkT_Mck_Jk()
         self.aggregate_JkT_Mck_Jk_dot()
         globals.Jw_pk_dot = globals.Jw_k_dot
@@ -713,7 +723,15 @@ class Cube:
         if self.parent is None:
             # root do the finish-up
             q__ = np.linalg.solve(globals.M, -globals.C @ globals.q_dot)
-            self.traverse(q__ * dt)
+            self.traverse(q__ * dt, dt)
+
+    def reset(self):
+        self.p[None] = ti.Vector(self.initial_state[0])
+        self.omega[None] = ti.Vector(self.initial_state[1])
+        self.initialize()
+        for c in self.children:
+            c.reset()
+
 
 
 arr = np.zeros(shape=(10, 8, 3))
@@ -738,7 +756,8 @@ def main():
     camera_dir = np.array([0.0, 0.0, -1.0])
 
     cube = Cube(0, omega=[10.0, 10.0, 1.0])
-    # link = Cube(1, omega=[0., 0., 0.], pos = [-1., -1., -1.], parent= cube)
+    # link = Cube(1, omega=[1., 0., 0.], pos = [-1., -1., -1.], parent= cube)
+    link = Cube(1, omega=[0., 0., 0.], pos = [-0.5, -0.5, -0.5], parent= cube)
     root = cube
 
     mouse_staled = np.zeros(2, dtype=np.float32)
@@ -757,6 +776,10 @@ def main():
             camera_pos[2] -= delta
         if window.is_pressed('s'):
             camera_pos[2] += delta
+        if window.is_pressed('r'):
+            root.reset()
+        if window.is_pressed(ti.GUI.ESCAPE):
+            quit()
 
         if (mouse_staled == 0.0).all():
             mouse_staled = mouse
@@ -777,13 +800,13 @@ def main():
 
         scene.mesh(cube.v_transformed, cube.indices,
                    two_sided=True, show_wireframe=False)
-        # scene.mesh(link.v_transformed, link.indices, two_sided=True, show_wireframe=False)
+        scene.mesh(link.v_transformed, link.indices, two_sided=True, show_wireframe=False)
 
         if ts % per_trace == 0:
             t = booknote(cube.v_transformed.to_numpy())
         scene.particles(trajectory, radius=0.01, color=(1.0, 0.0, 0.0))
         scene.particles(cube.v_transformed, radius=0.05, color=(1.0, 0.0, 0.0))
-        # scene.particles(link.v_transformed, radius=0.05, color=(1.0, 0.0, 0.0))
+        scene.particles(link.v_transformed, radius=0.05, color=(1.0, 0.0, 0.0))
         canvas.scene(scene)
         window.show()
         ts += 1
