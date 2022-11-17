@@ -524,8 +524,6 @@ class Cube:
             # root node
             dJw = Jw(self.q[None][3], self.q[None][4], self.q[None][5])
             R0 = rotation(self.q[None][3], self.q[None][4], self.q[None][5])
-            for i in ti.static(range(3)):
-                Jw_k[i, i] = 1.0
 
         self.R0[None] = R0
         for i, j in ti.static(ti.ndrange(3, 3)):
@@ -686,12 +684,12 @@ class Cube:
             globals.q_dot = self.q_dot_assemble().reshape((-1, 1))
             # print(globals.q_dot)
             globals.Jv_k = np.zeros_like(globals.Jv_k)
-            globals.Jw_k = np.zeros_like(globals.Jv_k)
-            globals.Jw_pk = np.zeros_like(globals.Jv_k)
+            globals.Jw_k = np.zeros_like(globals.Jw_k)
+            globals.Jw_pk = np.zeros_like(globals.Jw_pk)
 
-            globals.Jv_k_dot = np.zeros_like(globals.Jv_k)
-            globals.Jw_k_dot = np.zeros_like(globals.Jv_k)
-            globals.Jw_pk_dot = np.zeros_like(globals.Jv_k)
+            globals.Jv_k_dot = np.zeros_like(globals.Jv_k_dot)
+            globals.Jw_k_dot = np.zeros_like(globals.Jw_k_dot)
+            globals.Jw_pk_dot = np.zeros_like(globals.Jw_pk_dot)
 
             globals.M = np.zeros_like(globals.M)
             globals.C = np.zeros_like(globals.C)
