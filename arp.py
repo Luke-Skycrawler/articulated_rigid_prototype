@@ -490,7 +490,7 @@ class Cube:
 
         if ti.static(self.parent is not None):
             R0_pk = load_3x3(self.parent.R0)
-            r = r @ R0_pk
+            r = R0_pk @ r
         p = ti.Vector([self.q[None][0], self.q[None][1], self.q[None][2]])
 
         for i in ti.static(range(8)):
@@ -529,8 +529,8 @@ class Cube:
             R0_pk = load_3x3(self.parent.R0)
 
             dJw = R0_pk @ Jw(self.q[None][3], self.q[None][4], self.q[None][5])
-            R0 = rotation(self.q[None][3], self.q[None]
-                          [4], self.q[None][5]) @ R0_pk
+            R0 = R0_pk @ rotation(self.q[None][3], self.q[None]
+                          [4], self.q[None][5])
         else:
             # root node
             dJw = Jw(self.q[None][3], self.q[None][4], self.q[None][5])
@@ -586,7 +586,7 @@ class Cube:
             R0_pk = load_3x3(self.parent.R0)
             R0_dot_pk = load_3x3(self.parent.R0_dot)
 
-        R0_k_dot = R_dot @ R0_pk + R @ R0_dot_pk
+        R0_k_dot = R0_pk @ R_dot + R0_dot_pk @ R
         # fill_3x3(self.R0_dot, R0_k_dot, 0)
 
         _a1_dot = skew(R0_dot_pk @ self.r_pkl_hat)
@@ -759,8 +759,9 @@ def main():
     camera_dir = np.array([0.0, 0.0, -1.0])
 
     cube = Cube(0, omega=[10.0, 10.0, 1.0])
-    link = Cube(1, omega=[1., 0., 0.], pos = [-1., -1., -1.], parent= cube)
+    link = Cube(1, omega=[0., 0., 0.], pos = [-1., -1., -1.], parent= cube)
     # link = Cube(1, omega=[0., 0., 0.], pos = [-0.5, -0.5, -0.5], parent= cube)
+    # link3 = Cube(2, pos = [-2., -2., -2.], parent = link)
     root = cube
 
     mouse_staled = np.zeros(2, dtype=np.float32)
@@ -804,12 +805,14 @@ def main():
         scene.mesh(cube.v_transformed, cube.indices,
                    two_sided=True, show_wireframe=False)
         scene.mesh(link.v_transformed, link.indices, two_sided=True, show_wireframe=False)
+        # scene.mesh(link3.v_transformed, link.indices, two_sided=True, show_wireframe=False)
 
         if ts % per_trace == 0:
             t = booknote(cube.v_transformed.to_numpy())
         scene.particles(trajectory, radius=0.01, color=(1.0, 0.0, 0.0))
         scene.particles(cube.v_transformed, radius=0.05, color=(1.0, 0.0, 0.0))
         scene.particles(link.v_transformed, radius=0.05, color=(1.0, 0.0, 0.0))
+        # scene.particles(link3.v_transformed, radius=0.05, color=(1.0, 0.0, 0.0))
         canvas.scene(scene)
         window.show()
         ts += 1
