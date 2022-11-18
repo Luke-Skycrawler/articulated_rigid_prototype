@@ -5,7 +5,7 @@ import numpy as np
 
 # FIXME: drifting of the R matrix
 
-ti.init(arch=ti.cuda, default_fp=ti.f32)
+ti.init(arch=ti.cpu, default_fp=ti.f32)
 
 delta = 0.08
 per_trace = 10
@@ -542,23 +542,27 @@ class Cube:
                 Jw_k[i, j + 3 * (self.id + 1)] = dJw[i, j]
 
     @ti.kernel
-    def coeff_Jw_pk_Jw_k(self, a1: ti.types.ndarray(), a2: ti.types.ndarray()):
+    def coeff_Jw_pk_Jw_k(self, Jv_k: ti.types.ndarray(), a1: ti.types.ndarray()):
         R0_pk = ti.Matrix.identity(float, 3) if ti.static(
             self.parent is None) else load_3x3(self.parent.R0)
         R0_k = load_3x3(self.R0)
 
-        _a1 = skew(R0_pk @ self.r_pkl_hat)
-        _a2 = skew(R0_k @ self.r_lk_hat)
+        q = self.q[None]
+        R = rotation(q[3], q[4], q[5])
+        dJv = -R0_pk @ skew(R @ self.r_lk_hat) @ Jw(q[3], q[4], q[5])
+        _a1 = skew(R0_pk @ self.r_pkl_hat + R0_k @ self.r_lk_hat)
+        
         for i, j in ti.static(ti.ndrange(3, 3)):
             a1[i, j] = _a1[i, j]
-            a2[i, j] = _a2[i, j]
+            if self.id == 0:
+                Jv_k[i, j + 3 * (self.id + 1)] += dJv[i, j]
 
 
     def fill_Jvk(self):
         global globals
         if self.parent is not None:
-            self.coeff_Jw_pk_Jw_k(self.a1, self.a2)
-            globals.Jv_k += - self.a1 @ globals.Jw_pk - self.a2 @ globals.Jw_k
+            self.coeff_Jw_pk_Jw_k(globals.Jv_k, self.a1)
+            globals.Jv_k -= self.a1 @ globals.Jw_pk
         else:
             globals.Jv_k[:, : 3] = np.identity(3, np.float32)
 
