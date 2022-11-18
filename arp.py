@@ -5,13 +5,13 @@ import numpy as np
 
 # FIXME: drifting of the R matrix
 
-ti.init(arch=ti.cuda, default_fp=ti.f32)
+ti.init(arch=ti.x64, default_fp=ti.f32)
 
 delta = 0.08
 per_trace = 10
 trajectory = ti.Vector.field(3, float, shape=(80))
 
-n_cubes = 1
+n_cubes = 2
 n_dofs = 3 * n_cubes + 3
 n_3x3blocks = 5 * n_cubes - 3
 # Jw_k = ti.linalg.SparseMatrix(n = 3, m = n_dofs, dtype = float)
@@ -379,8 +379,8 @@ class Cube:
         self.parent = parent
         self.r_pkl_hat = self.vertices[0]
         # parent center to link
-        self.r_lk_hat = -self.vertices[7]
-        # self.r_lk_hat = ti.Vector([0.0, 0.0, 0.0], float)
+        # self.r_lk_hat = -self.vertices[7]
+        self.r_lk_hat = ti.Vector([0.0, 0.0, 0.0], float)
         # link to center
         self.children = []
         if self.parent is not None:
@@ -537,9 +537,8 @@ class Cube:
             R0 = rotation(self.q[None][3], self.q[None][4], self.q[None][5])
 
         self.R0[None] = R0
-        if ti.static(self.id == 0):
-            for i, j in ti.static(ti.ndrange(3, 3)):
-                Jw_k[i, j + 3 * (self.id + 1)] = dJw[i, j]
+        for i, j in ti.static(ti.ndrange(3, 3)):
+            Jw_k[i, j + 3 * (self.id + 1)] = dJw[i, j]
 
     @ti.kernel
     def coeff_Jw_pk_Jw_k(self, a1: ti.types.ndarray(), a2: ti.types.ndarray()):
@@ -633,9 +632,8 @@ class Cube:
         R0_pk = np.identity(
             3, dtype=np.float32) if self.parent is None else self.parent.R0.to_numpy()
         globals.Jw_k_dot = globals.Jw_pk_dot
-        if self.id == 0:
-            globals.Jw_k_dot[:, (self.id + 1) * 3: (self.id + 2)
-                            * 3] += R0_pk_dot @ Jw_hat + R0_pk @ Jw_dot_hat
+        globals.Jw_k_dot[:, (self.id + 1) * 3: (self.id + 2)
+                         * 3] += R0_pk_dot @ Jw_hat + R0_pk @ Jw_dot_hat
         # FIXME: offset, fixed
         # FIXME: change R0 and R0 dot to numpy arrays, fixed: not possible
         globals.Jv_k_dot = globals.Jv_k_dot - self.a1 @ globals.Jw_pk_dot - \
@@ -649,10 +647,9 @@ class Cube:
 
     @ti.kernel
     def update_q_dot(self, q__: ti.types.ndarray()):
-        if ti.static(self.id == 0):
-            i0 = (self.id + 1) * 3
-            for i in ti.static(range(3)):
-                self.q_dot[None][i + 3] += q__[i0 + i, 0]
+        i0 = (self.id + 1) * 3
+        for i in ti.static(range(3)):
+            self.q_dot[None][i + 3] += q__[i0 + i, 0]
 
     @ti.kernel
     def update_q(self, dt: float):
@@ -671,7 +668,7 @@ class Cube:
     def q_dot_assemble(self):
         _q_dot = self.q_dot.to_numpy()
 
-        q_dot_arr = _q_dot if self.parent is None else _q_dot[3:3]
+        q_dot_arr = _q_dot if self.parent is None else _q_dot[3:]
         for c in self.children:
             arr = c.q_dot_assemble()
             q_dot_arr = np.hstack([q_dot_arr, arr])
