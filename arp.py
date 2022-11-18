@@ -665,6 +665,16 @@ class Cube:
         for c in self.children:
             c.reset()
 
+    def mesh(self, scene):
+        scene.mesh(self.v_transformed, self.indices, two_sided=True, show_wireframe=False)
+        for c in self.children:
+            c.mesh(scene)
+            
+    def particles(self, scene):
+        scene.particles(self.v_transformed, radius=0.05, color=(1.0, 0.0, 0.0))
+        for c in self.children:
+            c.particles(scene)
+
 
 
 arr = np.zeros(shape=(10, 8, 3))
@@ -689,8 +699,8 @@ def main():
     camera_dir = np.array([0.0, 0.0, -1.0])
 
     cube = Cube(0, omega=[0.0, 0.0, 0.0])
-    link = Cube(1, omega=[0., 10., 0.], pos = [-1., -1., -1.] if not centered else [-0.5, -0.5, -0.5], parent= cube) 
-    link3 = Cube(2, pos = [-2., -2., -2.], parent = link)
+    link = None if n_cubes < 2 else Cube(1, omega=[0., 10., 0.], pos = [-1., -1., -1.] if not centered else [-0.5, -0.5, -0.5], parent= cube) 
+    link3 = None if n_cubes < 3 else Cube(2, pos = [-2., -2., -2.], parent = link)
     root = cube
 
     mouse_staled = np.zeros(2, dtype=np.float32)
@@ -731,17 +741,13 @@ def main():
             # cube.substep()
             # link.substep()
 
-        scene.mesh(cube.v_transformed, cube.indices,
-                   two_sided=True, show_wireframe=False)
-        scene.mesh(link.v_transformed, link.indices, two_sided=True, show_wireframe=False)
-        scene.mesh(link3.v_transformed, link.indices, two_sided=True, show_wireframe=False)
+        root.mesh(scene)
 
         if ts % per_trace == 0:
             t = booknote(cube.v_transformed.to_numpy())
         scene.particles(trajectory, radius=0.01, color=(1.0, 0.0, 0.0))
-        scene.particles(cube.v_transformed, radius=0.05, color=(1.0, 0.0, 0.0))
-        scene.particles(link.v_transformed, radius=0.05, color=(1.0, 0.0, 0.0))
-        scene.particles(link3.v_transformed, radius=0.05, color=(1.0, 0.0, 0.0))
+
+        root.particles(scene)
         canvas.scene(scene)
         window.show()
         ts += 1
