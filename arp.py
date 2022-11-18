@@ -10,15 +10,11 @@ ti.init(arch=ti.x64, default_fp=ti.f32)
 delta = 0.08
 per_trace = 10
 trajectory = ti.Vector.field(3, float, shape=(80))
-
-n_cubes = 3
+gravity = np.array([0.0, -9.8, 0.0], dtype = np.float32)
+n_cubes = 2
 n_dofs = 3 * n_cubes + 3
 n_3x3blocks = 5 * n_cubes - 3
 centered = False
-# Jw_k = ti.linalg.SparseMatrix(n = 3, m = n_dofs, dtype = float)
-# Jv_k = ti.linalg.SparseMatrix(n = 3, m = n_dofs, dtype = float)
-
-# triplets = ti.Vector.ndarray(n = 3, dtype = float, shape = n_3x3blocks * 9, layout=ti.Layout.AOS)
 
 
 class Globals:
@@ -34,7 +30,7 @@ class Globals:
 
         self.M = np.zeros((n_dofs, n_dofs), np.float32)
         self.C = np.zeros_like(self.M)
-
+        self.f = np.zeros((n_dofs), np.float32)
         self.q_dot = np.zeros((n_dofs), np.float32)
 
 
@@ -272,11 +268,6 @@ class Cube:
         self.q_dot = ti.Vector.field(6, float, shape=())
         # self.J_dot = ti.Matrix.field(6, 6, float, shape = ())
         self.omega = ti.Vector.field(3, float, shape=())
-        # self.euler = ti.field(float, shape = (3))
-        # self.euler_dot = ti.field(float, shape = (3))
-        # self.Jw = ti.Matrix.field(3,3,float, shape=())
-        # self.Mc = ti.field(float, shape=(6, 6))
-
 
         self.initial_state = [pos, omega]
         # constants
@@ -292,12 +283,6 @@ class Cube:
         self.indices = ti.field(ti.i32, shape=(3 * 12))
         self.faces = ti.Vector.field(4, ti.i32, shape=(6))
 
-        # self.p[None] = ti.Vector(pos)
-        # self.omega[None] = ti.Vector(omega)
-        # self.initialize()
-
-        # self.set_Ic()
-        # self.set_M()
         self.gen_v()
         self.gen_id()
 
@@ -331,12 +316,6 @@ class Cube:
         self.q_dot[None][3] = self.omega[None][0]
         self.q_dot[None][4] = self.omega[None][1]
         self.q_dot[None][5] = self.omega[None][2]
-
-    # @ti.func
-    # def set_Mc(self):
-    #     for i in ti.static(range(3)):
-    #         self.Mc[i, i] = self.m
-    #         self.Mc[i + 3, i + 3] = self.Ic
 
     @ti.kernel
     def midpoint(self):
@@ -613,9 +592,19 @@ class Cube:
             self.v_transformed[i] = self.R0[None] @ self.vertices[i] + self.p[None]
         # print(self.p[None], self.R0[None])
 
+    def aggregate_force(self):
+        global globals
+        
+        df = self.m * gravity @ globals.Jv_k
+        # print(df)
+        if self.id > 0:
+            globals.f += df
+
+
+
     def top_down(self):
         global globals
-        dt = 1e-4
+        dt = 3e-4
         if self.parent is None:
             globals.q_dot = self.q_dot_assemble().reshape((-1, 1))
             # print(globals.q_dot)
@@ -629,12 +618,14 @@ class Cube:
 
             globals.M = np.zeros_like(globals.M)
             globals.C = np.zeros_like(globals.C)
+            globals.f = np.zeros_like(globals.f)
 
         globals.Jw_k = 0 + globals.Jw_pk
         self.fill_Jwk(globals.Jw_k)
         self.fill_Jvk()
         self.aggregate_JkT_Mck_Jk()
         self.aggregate_JkT_Mck_Jk_dot()
+        self.aggregate_force()
         globals.Jw_pk_dot = globals.Jw_k_dot
         globals.Jw_pk = globals.Jw_k
 
@@ -655,7 +646,10 @@ class Cube:
 
         if self.parent is None:
             # root do the finish-up
-            q__ = np.linalg.solve(globals.M, -globals.C @ globals.q_dot)
+            q__ = np.linalg.solve(globals.M, -globals.C @ globals.q_dot + globals.f.reshape((-1, 1)))
+            # print("q.. = ", q__.reshape(1, -1))
+            # print(globals.f - (globals.C @ globals.q_dot).reshape(1, -1))
+            # print("f = ", globals.f)
             self.traverse(q__ * dt, dt)
 
     def reset(self):
@@ -699,7 +693,7 @@ def main():
     camera_dir = np.array([0.0, 0.0, -1.0])
 
     cube = Cube(0, omega=[0.0, 0.0, 0.0])
-    link = None if n_cubes < 2 else Cube(1, omega=[0., 10., 0.], pos = [-1., -1., -1.] if not centered else [-0.5, -0.5, -0.5], parent= cube) 
+    link = None if n_cubes < 2 else Cube(1, omega=[1., 0., 0.], pos = [-1., -1., -1.] if not centered else [-0.5, -0.5, -0.5], parent= cube) 
     link3 = None if n_cubes < 3 else Cube(2, pos = [-2., -2., -2.], parent = link)
     root = cube
 
