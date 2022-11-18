@@ -5,15 +5,16 @@ import numpy as np
 
 # FIXME: drifting of the R matrix
 
-ti.init(arch=ti.cpu, default_fp=ti.f32)
+ti.init(arch=ti.x64, default_fp=ti.f32)
 
 delta = 0.08
 per_trace = 10
 trajectory = ti.Vector.field(3, float, shape=(80))
 
-n_cubes = 1
+n_cubes = 2
 n_dofs = 3 * n_cubes + 3
 n_3x3blocks = 5 * n_cubes - 3
+centered = True
 # Jw_k = ti.linalg.SparseMatrix(n = 3, m = n_dofs, dtype = float)
 # Jv_k = ti.linalg.SparseMatrix(n = 3, m = n_dofs, dtype = float)
 
@@ -39,30 +40,6 @@ class Globals:
 
 globals = Globals()
 
-# @ti.func
-# def dot_block_diag(A, x):
-#     A1 = ti.Matrix.zero(float, 3, 3)
-#     A2 = ti.Matrix.zero(float, 3, 3)
-#     x1 = ti.Vector.zero(float, 3)
-#     x2 = ti.Vector.zero(float, 3)
-#     ret =ti.Vector.zero(float, 6)
-#     for i, j in ti.static(ti.ndrange(3,3)):
-#         A1[i, j] = A[i, j]
-#         A2[i, j] = A[i + 3, j + 3]
-#     for i in ti.static(range(3)):
-#         x1[i] = x[i]
-#         x2[i] = x[i + 3]
-
-#     r1 = A1 @ x1
-#     r2 = A2 @ x2
-
-#     for i in ti.static(range(3)):
-#         ret[i] = r1[i]
-#         ret[i + 3] = r2[i]
-
-#     return ret
-
-
 @ti.func
 def skew(r):
     ret = ti.Matrix.zero(float, 3, 3)
@@ -74,15 +51,6 @@ def skew(r):
     ret[2, 1] = +r[0]
     return ret
 
-# @ti.func
-# def block_diag(A, B):
-#     ret = ti.Matrix.zero(float, 6, 6)
-#     for i, j in ti.static(ti.ndrange(3, 3)):
-#         ret[i, j] = A[i, j]
-#         ret[i + 3, j + 3] = B[i, j]
-#     return ret
-
-
 @ti.func
 def unskew(R):
     ret = ti.Vector.zero(float, 3)
@@ -90,41 +58,6 @@ def unskew(R):
     ret[1] = - R[2, 0]
     ret[2] = R[1, 0]
     return ret
-
-
-@ti.func
-def f(p, q):
-    return ti.Vector.zero(float, 3)
-
-
-@ti.func
-def tau(p, q):
-    return ti.Vector.zero(float, 3)
-
-# @ti.func
-# def solve_block_diag(A, b):
-#     # assert A.shape[0] == 6 and A.shape[1] == 6 and b.shape[0] == 6
-#     # assert A is block diagonal matrix
-#     A1 = ti.Matrix.zero(float, 3, 3)
-#     A2 = ti.Matrix.zero(float, 3, 3)
-#     for i, j in ti.static(ti.ndrange(3,3)):
-#         A1[i, j] = A[i, j]
-#         A2[i, j] = A[i + 3, j + 3]
-
-#     b1 = ti.Vector.zero(float, 3)
-#     b2 = ti.Vector.zero(float, 3)
-#     for i in ti.static(range(3)):
-#         b1[i] = b[i]
-#         b2[i] = b[i + 3]
-#     x1 = A1.inverse() @ b1
-#     x2 = A2.inverse() @ b2
-#     ret = ti.Vector.zero(float, 6)
-#     for i in ti.static(range(3)):
-#         ret[i] = x1[i]
-#         ret[i + 3] = x2[i]
-
-#     return ret
-
 
 @ti.func
 def rotation(a, b, c):
@@ -293,25 +226,17 @@ def J_dot(a, b, c, d1, d2, d3):
     jb_dot = unskew(dpR_pb @ R.transpose() + pR_pb @ R_dot.transpose())
     jc_dot = unskew(dpR_pc @ R.transpose() + pR_pc @ R_dot.transpose())
     return ti.Matrix.cols([ja_dot, jb_dot, jc_dot])
-    # return block_diag(ti.Matrix.zero(float, 3, 3), ti.Matrix.cols([ja_dot, jb_dot, jc_dot]))
 
 # @ti.func
-# def J(a, b, c):
-#     ret = ti.Matrix.zero(float, 6, 6)
-#     jw = Jw(a, b, c)
-#     return block_diag(ti.Matrix.identity(float, 3), jw)
-
-
-@ti.func
-def fill_3x3(J, A, i):
-    '''
-    J: 3 * 6n
-    A: 3 * 3
-    i: 
-    '''
-    I = 3 * i
-    for i, j in ti.ndrange(3, 3):
-        J[i, I + j] = A[i, j]
+# def fill_3x3(J, A, i):
+#     '''
+#     J: 3 * 6n
+#     A: 3 * 3
+#     i: 
+#     '''
+#     I = 3 * i
+#     for i, j in ti.ndrange(3, 3):
+#         J[i, I + j] = A[i, j]
 
 # @ti.func
 # def load_3x3(A):
@@ -379,8 +304,8 @@ class Cube:
         self.parent = parent
         self.r_pkl_hat = self.vertices[0]
         # parent center to link
-        self.r_lk_hat = -self.vertices[7]
-        # self.r_lk_hat = ti.Vector([0.0, 0.0, 0.0], float)
+        # self.r_lk_hat = -self.vertices[7]
+        self.r_lk_hat = ti.Vector([0.0, 0.0, 0.0], float) if centered else -self.vertices[7]
         # link to center
         self.children = []
         if self.parent is not None:
@@ -537,9 +462,8 @@ class Cube:
             R0 = rotation(self.q[None][3], self.q[None][4], self.q[None][5])
 
         self.R0[None] = R0
-        if ti.static(self.id == 0):
-            for i, j in ti.static(ti.ndrange(3, 3)):
-                Jw_k[i, j + 3 * (self.id + 1)] = dJw[i, j]
+        for i, j in ti.static(ti.ndrange(3, 3)):
+            Jw_k[i, j + 3 * (self.id + 1)] = dJw[i, j]
 
     @ti.kernel
     def coeff_Jw_pk_Jw_k(self, Jv_k: ti.types.ndarray(), a1: ti.types.ndarray()):
@@ -637,9 +561,8 @@ class Cube:
         R0_pk = np.identity(
             3, dtype=np.float32) if self.parent is None else self.parent.R0.to_numpy()
         globals.Jw_k_dot = globals.Jw_pk_dot
-        if self.id == 0:
-            globals.Jw_k_dot[:, (self.id + 1) * 3: (self.id + 2)
-                            * 3] += R0_pk_dot @ Jw_hat + R0_pk @ Jw_dot_hat
+        globals.Jw_k_dot[:, (self.id + 1) * 3: (self.id + 2)
+                         * 3] += R0_pk_dot @ Jw_hat + R0_pk @ Jw_dot_hat
         # FIXME: offset, fixed
         # FIXME: change R0 and R0 dot to numpy arrays, fixed: not possible
         globals.Jv_k_dot = globals.Jv_k_dot - self.a1 @ globals.Jw_pk_dot - \
@@ -653,10 +576,9 @@ class Cube:
 
     @ti.kernel
     def update_q_dot(self, q__: ti.types.ndarray()):
-        if ti.static(self.id == 0):
-            i0 = (self.id + 1) * 3
-            for i in ti.static(range(3)):
-                self.q_dot[None][i + 3] += q__[i0 + i, 0]
+        i0 = (self.id + 1) * 3
+        for i in ti.static(range(3)):
+            self.q_dot[None][i + 3] += q__[i0 + i, 0]
 
     @ti.kernel
     def update_q(self, dt: float):
@@ -675,7 +597,7 @@ class Cube:
     def q_dot_assemble(self):
         _q_dot = self.q_dot.to_numpy()
 
-        q_dot_arr = _q_dot if self.parent is None else _q_dot[3:3]
+        q_dot_arr = _q_dot if self.parent is None else _q_dot[3:]
         for c in self.children:
             arr = c.q_dot_assemble()
             q_dot_arr = np.hstack([q_dot_arr, arr])
@@ -762,9 +684,8 @@ def main():
     camera_pos = np.array([0.0, 0.0, 3.0])
     camera_dir = np.array([0.0, 0.0, -1.0])
 
-    cube = Cube(0, omega=[10.0, 10.0, 1.0])
-    link = Cube(1, omega=[0., 0., 0.], pos = [-1., -1., -1.], parent= cube)
-    # link = Cube(1, omega=[0., 0., 0.], pos = [-0.5, -0.5, -0.5], parent= cube)
+    cube = Cube(0, omega=[0.0, 0.0, 10.0])
+    link = Cube(1, omega=[0., 0., 0.], pos = [-1., -1., -1.] if not centered else [-0.5, -0.5, -0.5], parent= cube) 
     # link3 = Cube(2, pos = [-2., -2., -2.], parent = link)
     root = cube
 
