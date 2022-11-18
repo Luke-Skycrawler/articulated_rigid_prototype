@@ -478,8 +478,7 @@ class Cube:
         
         for i, j in ti.static(ti.ndrange(3, 3)):
             a1[i, j] = _a1[i, j]
-            if self.id == 0:
-                Jv_k[i, j + 3 * (self.id + 1)] += dJv[i, j]
+            Jv_k[i, j + 3 * (self.id + 1)] += dJv[i, j]
 
 
     def fill_Jvk(self):
@@ -643,7 +642,13 @@ class Cube:
 
         # self.substep()
         dxc = globals.Jv_k @ globals.q_dot * dt
+        
         self.project_vertices(dxc)
+        if self.id == 1:
+            # print(dxc.reshape((1, -1)))
+            print(globals.Jv_k[:, -3:])
+            print(globals.q_dot.reshape((1, -1)))
+            print("")
 
         # FIXME: support for tree (now only suitable for chain)
         for c in self.children:
@@ -684,8 +689,8 @@ def main():
     camera_pos = np.array([0.0, 0.0, 3.0])
     camera_dir = np.array([0.0, 0.0, -1.0])
 
-    cube = Cube(0, omega=[0.0, 0.0, 10.0])
-    link = Cube(1, omega=[0., 0., 0.], pos = [-1., -1., -1.] if not centered else [-0.5, -0.5, -0.5], parent= cube) 
+    cube = Cube(0, omega=[0.0, 0.0, 0.0])
+    link = Cube(1, omega=[0., 10., 0.], pos = [-1., -1., -1.] if not centered else [-0.5, -0.5, -0.5], parent= cube) 
     # link3 = Cube(2, pos = [-2., -2., -2.], parent = link)
     root = cube
 
