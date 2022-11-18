@@ -11,10 +11,10 @@ delta = 0.08
 per_trace = 10
 trajectory = ti.Vector.field(3, float, shape=(80))
 
-n_cubes = 2
+n_cubes = 3
 n_dofs = 3 * n_cubes + 3
 n_3x3blocks = 5 * n_cubes - 3
-centered = True
+centered = False
 # Jw_k = ti.linalg.SparseMatrix(n = 3, m = n_dofs, dtype = float)
 # Jv_k = ti.linalg.SparseMatrix(n = 3, m = n_dofs, dtype = float)
 
@@ -630,11 +630,9 @@ class Cube:
             globals.M = np.zeros_like(globals.M)
             globals.C = np.zeros_like(globals.C)
 
-        globals.Jw_k = globals.Jw_pk
+        globals.Jw_k = 0 + globals.Jw_pk
         self.fill_Jwk(globals.Jw_k)
         self.fill_Jvk()
-        # if self.id == 1:
-        #     print(globals.Jv_k)
         self.aggregate_JkT_Mck_Jk()
         self.aggregate_JkT_Mck_Jk_dot()
         globals.Jw_pk_dot = globals.Jw_k_dot
@@ -644,11 +642,12 @@ class Cube:
         dxc = globals.Jv_k @ globals.q_dot * dt
         
         self.project_vertices(dxc)
-        if self.id == 1:
-            # print(dxc.reshape((1, -1)))
-            print(globals.Jv_k[:, -3:])
-            print(globals.q_dot.reshape((1, -1)))
-            print("")
+        # if self.id == 1 or self.id == 0:
+        #     print(self.id)
+        #     # print(dxc.reshape((1, -1)))
+        #     print(globals.Jv_k[:, -3:])
+        #     # print(globals.q_dot.reshape((1, -1)))
+        #     print("")
 
         # FIXME: support for tree (now only suitable for chain)
         for c in self.children:
@@ -691,7 +690,7 @@ def main():
 
     cube = Cube(0, omega=[0.0, 0.0, 0.0])
     link = Cube(1, omega=[0., 10., 0.], pos = [-1., -1., -1.] if not centered else [-0.5, -0.5, -0.5], parent= cube) 
-    # link3 = Cube(2, pos = [-2., -2., -2.], parent = link)
+    link3 = Cube(2, pos = [-2., -2., -2.], parent = link)
     root = cube
 
     mouse_staled = np.zeros(2, dtype=np.float32)
@@ -735,14 +734,14 @@ def main():
         scene.mesh(cube.v_transformed, cube.indices,
                    two_sided=True, show_wireframe=False)
         scene.mesh(link.v_transformed, link.indices, two_sided=True, show_wireframe=False)
-        # scene.mesh(link3.v_transformed, link.indices, two_sided=True, show_wireframe=False)
+        scene.mesh(link3.v_transformed, link.indices, two_sided=True, show_wireframe=False)
 
         if ts % per_trace == 0:
             t = booknote(cube.v_transformed.to_numpy())
         scene.particles(trajectory, radius=0.01, color=(1.0, 0.0, 0.0))
         scene.particles(cube.v_transformed, radius=0.05, color=(1.0, 0.0, 0.0))
         scene.particles(link.v_transformed, radius=0.05, color=(1.0, 0.0, 0.0))
-        # scene.particles(link3.v_transformed, radius=0.05, color=(1.0, 0.0, 0.0))
+        scene.particles(link3.v_transformed, radius=0.05, color=(1.0, 0.0, 0.0))
         canvas.scene(scene)
         window.show()
         ts += 1
