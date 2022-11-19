@@ -12,12 +12,12 @@ delta = 0.08
 per_trace = 10
 trajectory = ti.Vector.field(3, float, shape=(80))
 gravity = np.array([0.0, -9.8, 0.0], dtype = np.float32)
-n_cubes = 2
+n_cubes = 1
 m = 3 * (n_cubes - 1) 
 # n_constraints
 n_dofs = 3 * n_cubes + 3 if lagrange else 6 * n_cubes
 # n_3x3blocks = 5 * n_cubes - 3
-centered = False
+centered = True
 
 
 class Globals:
@@ -35,6 +35,7 @@ class Globals:
         self.C = np.zeros_like(self.M) if lagrange else None
         self.f = np.zeros((n_dofs), np.float32) if lagrange else None
         self.q_dot = np.zeros((n_dofs), np.float32)
+        self.q = np.zeros((n_dofs), np.float32) 
 
         self.Jc = np.zeros((m, n_dofs), np.float32) if not lagrange else None
         self.Jc_dot = np.zeros((m, n_dofs), np.float32) if not lagrange else None
@@ -726,12 +727,15 @@ class Cube:
 
     def q_dot_assemble(self):
         _q_dot = self.q_dot.to_numpy()
+        _q = self.q.to_numpy()
 
         q_dot_arr = _q_dot if not lagrange or self.parent is None else _q_dot[3:]
+        q_arr = _q
         for c in self.children:
-            arr = c.q_dot_assemble()
+            arr, arr2 = c.q_dot_assemble()
+            q_arr = np.hstack([q_arr, arr2])
             q_dot_arr = np.hstack([q_dot_arr, arr])
-        return q_dot_arr
+        return q_dot_arr, q_arr
 
     @ti.kernel
     def project_vertices(self, dx: ti.types.ndarray()):
@@ -900,13 +904,6 @@ class Cube:
 
         globals.Jc[3 * (k -1) * 3 : 3 * k, :] = lines
 
-    def fill_W(self, W):
-        i0 = self.id * 6
-        W[i0: i0 + 3] = np.ones(3, np.float32) / self.m
-        W[i0 + 3: i0 + 6] = np.ones(3, np.float32) / self.Ic
-        for c in self.children:
-            c.fill_W(W)
-
     def fill_Jc_dot(self):
         global globals
         pk = self.parent.id
@@ -936,30 +933,50 @@ class Cube:
 
         globals.Jc_dot[3 * (k -1) * 3 : 3 * k, :] = lines
 
+    def fill_W(self, W):
+        i0 = self.id * 6
+        W[i0: i0 + 3] = np.ones(3, np.float32) / self.m
+        W[i0 + 3: i0 + 6] = np.ones(3, np.float32) / self.Ic
+        for c in self.children:
+            c.fill_W(W)
+
     def solve_sytem(self):
-        # diag_W = np.zeros((n_dofs), np.float32)
-        # self.fill_W(diag_W)
-        # JcWJcT = globals.Jc @ np.diag(diag_W) @ globals.Jc.T
-        # lam = np.linalg.solve(JcWJcT, -globals.Jc_dot @ globals.q_dot) # - globals.Jc @ W @ Q)
-        # q__ = np.diag(diag_W) @ (globals.Jc.T @ lam) 
-        q__ = np.zeros((n_dofs), np.float32)
+        diag_W = np.zeros((n_dofs), np.float32)
+        self.fill_W(diag_W)
+        JcWJcT = globals.Jc @ np.diag(diag_W) @ globals.Jc.T
+        lam = np.linalg.solve(JcWJcT, -globals.Jc_dot @ globals.q_dot) # - globals.Jc @ W @ Q)
+        # print("lam = ")
+        # print(lam)
+        q__ = np.diag(diag_W) @ (globals.Jc.T @ lam) 
+        # print("q.. = ")
+        # print(q__)
+        # print("Jc q. = ")
+        # print(globals.Jc @ globals.q_dot)
+        
+        # print("q. = ")
+        # print(globals.q_dot)
+        # q__ = np.zeros((n_dofs), np.float32)
         return q__
     
+    @ti.kernel
+    def fill_R0(self):
+        q = self.q[None]
+        self.R0[None] = rotation(q[3], q[4], q[5])
+
     def top_down_constrained(self):
         global globals
         dt = 1e-4
 
-        # FIXME: clean up
         if self.parent is None:
-            globals.q_dot = self.q_dot_assemble()
+            globals.q_dot, globals.q = self.q_dot_assemble()
             globals.Jc = np.zeros_like(globals.Jc)
             globals.Jc_dot = np.zeros_like(globals.Jc_dot)
         else :
             self.fill_Jc()
             self.fill_Jc_dot()
-            # FIXME: very slow
 
         dxc = globals.q_dot[self.id * 6: self.id * 6 + 3].reshape((-1, 1)) * dt
+        self.fill_R0()
         self.project_vertices(dxc)
 
         for c in self.children:
@@ -991,7 +1008,7 @@ def main():
     camera_pos = np.array([0.0, 0.0, 3.0])
     camera_dir = np.array([0.0, 0.0, -1.0])
 
-    cube = Cube(0, omega=[0.0, 0.0, 0.0])
+    cube = Cube(0, omega=[10.0, 10.0, 10.0])
     link = None if n_cubes < 2 else Cube(1, omega=[1., 0., 0.], pos = [-1., -1., -1.] if not centered else [-0.5, -0.5, -0.5], parent= cube) 
     link3 = None if n_cubes < 3 else Cube(2, pos = [-2., -2., -2.], parent = link)
     root = cube
