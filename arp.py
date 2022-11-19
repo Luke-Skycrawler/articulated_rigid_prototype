@@ -118,7 +118,11 @@ def rotation_dot(a, b, c, d1, d2, d3):
     return R_dot
 
 @ti.kernel
-def Rq_r(q: ti.template(), r: ti.template(), ret: ti.types.ndarray()):
+def Rq_r(q: ti.template(), 
+    r0: float, 
+    r1: float, 
+    r2: float, 
+    ret: ti.types.ndarray()):
     '''
     
     '''
@@ -127,7 +131,7 @@ def Rq_r(q: ti.template(), r: ti.template(), ret: ti.types.ndarray()):
     c = q[None][5]
 
     # _r = ti.Vector([r[0], r[1], r[2]])
-    _r = r
+    _r = ti.Vector([r0, r1, r2])
     s1 = sin(a)
     s2 = sin(b)
     s3 = sin(c)
@@ -157,7 +161,11 @@ def Rq_r(q: ti.template(), r: ti.template(), ret: ti.types.ndarray()):
         ret[i, j] = t[i, j]
 
 @ti.kernel
-def Rq_r_dot(q: ti.template(), q_dot: ti.template(), r: ti.template(), ret: ti.types.ndarray()):
+def Rq_r_dot(q: ti.template(), q_dot: ti.template(), 
+    r0: float, 
+    r1: float, 
+    r2: float, 
+    ret: ti.types.ndarray()):
     '''
     
     '''
@@ -172,6 +180,7 @@ def Rq_r_dot(q: ti.template(), q_dot: ti.template(), r: ti.template(), ret: ti.t
     c2 = cos(b)
     c3 = cos(c)
 
+    r = ti.Vector([r0, r1, r2])
     R = ti.Matrix([
         [c1 * c2, c1 * s2 * s3 - c3 * s1, s1 * s3 + c1 * c3 * s2],
         [c2 * s1, c1 * c3 + s1 * s2 * s3, c3 * s1 * s2 - c1 * s3],
@@ -718,7 +727,7 @@ class Cube:
     def q_dot_assemble(self):
         _q_dot = self.q_dot.to_numpy()
 
-        q_dot_arr = _q_dot if self.parent is None or not lagrange else _q_dot[3:]
+        q_dot_arr = _q_dot if not lagrange or self.parent is None else _q_dot[3:]
         for c in self.children:
             arr = c.q_dot_assemble()
             q_dot_arr = np.hstack([q_dot_arr, arr])
@@ -870,15 +879,26 @@ class Cube:
         q_k = self.q
         Rq_pk = np.zeros((3,3), np.float32)
         Rq_k = np.zeros((3,3), np.float32)
+        lines = np.zeros((3, n_dofs), np.float32)
 
-        lines = globals.Jc[3 * (k -1) * 3 : 3 * k, :]
+        # lines = globals.Jc[3 * (k -1) * 3 : 3 * k, :]
 
+        Rq_r(q_pk, 
+            self.r_pkl_hat[0], 
+            self.r_pkl_hat[1], 
+            self.r_pkl_hat[2], 
+            Rq_pk)
+        Rq_r(q_k, 
+            -self.r_lk_hat[0],
+            -self.r_lk_hat[1],
+            -self.r_lk_hat[2],
+            Rq_k)
         lines[:, 6 * pk: 6 * pk + 3] = np.identity(3, np.float32) 
-        lines[:, 6 * k: 6 * k + 3] = - np.identity(3, np.float32) 
-        Rq_r(q_pk, self.r_pkl_hat, Rq_pk)
-        Rq_r(q_k, - self.r_pkl_hat, Rq_k)
+        lines[:, 6 * k: 6 * k + 3] = -np.identity(3, np.float32) 
         lines[:, 6 * pk + 3: 6 * pk + 6] = Rq_pk
         lines[:, 6 * k + 3: 6 * k + 6] = -Rq_k
+
+        globals.Jc[3 * (k -1) * 3 : 3 * k, :] = lines
 
     def fill_W(self, W):
         i0 = self.id * 6
@@ -897,30 +917,47 @@ class Cube:
         q_dot_k = self.q_dot
         Rq_dot_pk = np.zeros((3,3), np.float32)
         Rq_dot_k = np.zeros((3,3), np.float32)
+        lines = np.zeros((3, n_dofs), np.float32)
 
-        lines = globals.Jc[3 * (k -1) * 3 : 3 * k, :]
-        Rq_r_dot(q_pk, q_dot_pk, self.r_pkl_hat, Rq_dot_pk)
-        Rq_r_dot(q_k, q_dot_k, -self.r_pkl_hat, Rq_dot_k)
+        Rq_r_dot(q_pk, q_dot_pk, 
+            self.r_pkl_hat[0], 
+            self.r_pkl_hat[1], 
+            self.r_pkl_hat[2], 
+            Rq_dot_pk)
+
+        Rq_r_dot(q_k, q_dot_k, 
+            -self.r_lk_hat[0], 
+            -self.r_lk_hat[1], 
+            -self.r_lk_hat[2], 
+            Rq_dot_k)
+
         lines[:, 6 * pk + 3: 6 * pk + 6] = Rq_dot_pk
         lines[:, 6 * k + 3: 6 * k + 6] = -Rq_dot_k
 
+        globals.Jc_dot[3 * (k -1) * 3 : 3 * k, :] = lines
+
     def solve_sytem(self):
-        diag_W = np.zeros((n_dofs), np.float32)
-        self.fill_W(diag_W)
-        JcWJcT = globals.Jc @ np.diag(diag_W) @ globals.Jc.T
-        lam = np.linalg.solve(JcWJcT, -globals.Jc_dot @ globals.q_dot) # - globals.Jc @ W @ Q)
-        q__ = globals.Jc @ np.diag(diag_W) @ (globals.Jc.T @ lam) 
+        # diag_W = np.zeros((n_dofs), np.float32)
+        # self.fill_W(diag_W)
+        # JcWJcT = globals.Jc @ np.diag(diag_W) @ globals.Jc.T
+        # lam = np.linalg.solve(JcWJcT, -globals.Jc_dot @ globals.q_dot) # - globals.Jc @ W @ Q)
+        # q__ = np.diag(diag_W) @ (globals.Jc.T @ lam) 
+        q__ = np.zeros((n_dofs), np.float32)
         return q__
     
     def top_down_constrained(self):
         global globals
         dt = 1e-4
 
+        # FIXME: clean up
         if self.parent is None:
             globals.q_dot = self.q_dot_assemble()
+            globals.Jc = np.zeros_like(globals.Jc)
+            globals.Jc_dot = np.zeros_like(globals.Jc_dot)
         else :
             self.fill_Jc()
             self.fill_Jc_dot()
+            # FIXME: very slow
 
         dxc = globals.q_dot[self.id * 6: self.id * 6 + 3].reshape((-1, 1)) * dt
         self.project_vertices(dxc)
