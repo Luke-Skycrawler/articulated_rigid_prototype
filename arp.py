@@ -12,12 +12,12 @@ delta = 0.08
 per_trace = 10
 trajectory = ti.Vector.field(3, float, shape=(80))
 gravity = np.array([0.0, -9.8, 0.0], dtype = np.float32)
-n_cubes = 1
+n_cubes = 2
 m = 3 * (n_cubes - 1) 
 # n_constraints
 n_dofs = 3 * n_cubes + 3 if lagrange else 6 * n_cubes
 # n_3x3blocks = 5 * n_cubes - 3
-centered = True
+centered = False
 
 
 class Globals:
@@ -616,7 +616,10 @@ class Cube:
 
     @ti.kernel
     def update_q(self, dt: float):
+        q_ = self.q_dot[None]
         self.q[None] += self.q_dot[None] * dt
+        omega = ti.Vector([q_[3], q_[4], q_[5]])
+        self.R0[None] += skew(omega) @ self.R0[None] * dt
 
     def traverse(self, q__, dt=1e-4):
         '''
@@ -641,15 +644,11 @@ class Cube:
         return q_dot_arr, q_arr
 
     @ti.kernel
-    def project_vertices(self, dx: ti.types.ndarray()):
-        # dt = 1e-4
+    def project_vertices(self):
         for i in ti.static(range(3)):
-            self.p[None][i] += dx[i, 0]
-        # FIXME: dx shape probably wrong
-
+            self.p[None][i] = self.q[None][i]
         for i in ti.static(range(8)):
             self.v_transformed[i] = self.R0[None] @ self.vertices[i] + self.p[None]
-        # print(self.p[None], self.R0[None])
 
     def aggregate_force(self):
         global globals
@@ -819,27 +818,28 @@ class Cube:
         diag_W = np.zeros((n_dofs), np.float32)
         self.fill_W(diag_W)
         JcWJcT = globals.Jc @ np.diag(diag_W) @ globals.Jc.T
-        lam = np.linalg.solve(JcWJcT, -globals.Jc_dot @ globals.q_dot) # - globals.Jc @ W @ Q)
-        # print("lam = ")
-        # print(lam)
+
+        C = np.zeros((3), np.float32)
+        self.compute_C(C)
+        lam = np.linalg.solve(JcWJcT, -globals.Jc_dot @ globals.q_dot - 100 * globals.Jc @ globals.q_dot - 1e4 * C) # - globals.Jc @ W @ Q)
         q__ = np.diag(diag_W) @ (globals.Jc.T @ lam) 
-        # print("q.. = ")
-        # print(q__)
-        # print("Jc q. = ")
+        # print(f"\nC.. = ")
+        # print(globals.Jc_dot @ globals.q_dot + globals.Jc @ q__)
+
+        # print(f"\nC. = ")
         # print(globals.Jc @ globals.q_dot)
-        
-        # print("q. = ")
-        # print(globals.q_dot)
-        # q__ = np.zeros((n_dofs), np.float32)
         return q__
-    
+
     @ti.kernel
-    def fill_R0(self, dt: float):
-        # q = self.q[None]
-        # self.R0[None] = rotation(q[3], q[4], q[5])
-        q_ = self.q_dot[None]
-        omega = ti.Vector([q_[3], q_[4], q_[5]])
-        self.R0[None] += skew(omega) @ self.R0[None] * dt
+    def compute_C(self, C: ti.types.ndarray()):
+        xl_k = self.children[0].v_transformed[7]
+
+        dx = self.v_transformed[0] - xl_k 
+        for i in ti.static(range(3)):
+            C[i] = dx[i]
+
+        # print("C = ")
+        # print(dx)
 
     def top_down_constrained(self):
         global globals
@@ -853,9 +853,7 @@ class Cube:
             self.fill_Jc()
             self.fill_Jc_dot()
 
-        dxc = globals.q_dot[self.id * 6: self.id * 6 + 3].reshape((-1, 1)) * dt
-        self.fill_R0(dt)
-        self.project_vertices(dxc)
+        self.project_vertices()
 
         for c in self.children:
             c.top_down_constrained()
@@ -887,7 +885,7 @@ def main():
     camera_dir = np.array([0.0, 0.0, -1.0])
 
     cube = Cube(0, omega=[10.0, 10.0, 10.0])
-    link = None if n_cubes < 2 else Cube(1, omega=[1., 0., 0.], pos = [-1., -1., -1.] if not centered else [-0.5, -0.5, -0.5], parent= cube) 
+    link = None if n_cubes < 2 else Cube(1, omega=[10., 0., 0.], pos = [-1., -1., -1.] if not centered else [-0.5, -0.5, -0.5], parent= cube) 
     link3 = None if n_cubes < 3 else Cube(2, pos = [-2., -2., -2.], parent = link)
     root = cube
 
