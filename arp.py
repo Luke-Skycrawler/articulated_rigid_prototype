@@ -633,22 +633,25 @@ class Cube:
 
     def q_dot_assemble(self):
         _q_dot = self.q_dot.to_numpy()
-        _q = self.q.to_numpy()
 
         q_dot_arr = _q_dot if not lagrange or self.parent is None else _q_dot[3:]
-        q_arr = _q
         for c in self.children:
-            arr, arr2 = c.q_dot_assemble()
-            q_arr = np.hstack([q_arr, arr2])
+            arr = c.q_dot_assemble()
             q_dot_arr = np.hstack([q_dot_arr, arr])
-        return q_dot_arr, q_arr
+        return q_dot_arr
 
     @ti.kernel
-    def project_vertices(self):
+    def project_vertices(self, dx: ti.types.ndarray()):
+        # dt = 1e-4
         for i in ti.static(range(3)):
-            self.p[None][i] = self.q[None][i]
+            if ti.static(lagrange):
+                self.p[None][i] += dx[i, 0]
+            else:
+                self.p[None][i] = self.q[None][i]
+
         for i in ti.static(range(8)):
             self.v_transformed[i] = self.R0[None] @ self.vertices[i] + self.p[None]
+
 
     def aggregate_force(self):
         global globals
@@ -843,17 +846,17 @@ class Cube:
 
     def top_down_constrained(self):
         global globals
-        dt = 1e-4
+        dt = 3e-4
 
         if self.parent is None:
-            globals.q_dot, globals.q = self.q_dot_assemble()
+            globals.q_dot = self.q_dot_assemble()
             globals.Jc = np.zeros_like(globals.Jc)
             globals.Jc_dot = np.zeros_like(globals.Jc_dot)
         else :
             self.fill_Jc()
             self.fill_Jc_dot()
 
-        self.project_vertices()
+        self.project_vertices(np.zeros((1)))
 
         for c in self.children:
             c.top_down_constrained()
