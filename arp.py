@@ -35,6 +35,7 @@ class Globals:
         self.C = np.zeros_like(self.M) if lagrange else None
         self.f = np.zeros((n_dofs), np.float32) if lagrange else None
         self.q_dot = np.zeros((n_dofs), np.float32)
+        self.q = np.zeros((n_dofs), np.float32) 
 
         self.Jc = np.zeros((m, n_dofs), np.float32) if not lagrange else None
         self.Jc_dot = np.zeros((m, n_dofs), np.float32) if not lagrange else None
@@ -118,50 +119,21 @@ def rotation_dot(a, b, c, d1, d2, d3):
     return R_dot
 
 @ti.kernel
-def Rq_r(q: ti.template(), 
+def skew_Rr(R0: ti.template(), 
     r0: float, 
     r1: float, 
     r2: float, 
     ret: ti.types.ndarray()):
-    '''
-    
-    '''
-    a = q[None][3]
-    b = q[None][4]
-    c = q[None][5]
-
-    # _r = ti.Vector([r[0], r[1], r[2]])
     _r = ti.Vector([r0, r1, r2])
-    s1 = sin(a)
-    s2 = sin(b)
-    s3 = sin(c)
 
-    c1 = cos(a)
-    c2 = cos(b)
-    c3 = cos(c)
-
-    pR_pa = ti.Matrix([
-        [-s1 * c2, -s1 * s2 * s3 - c3 * c1, c1 * s3 + -s1 * c3 * s2],
-        [c2 * c1, -s1 * c3 + c1 * s2 * s3, c3 * c1 * s2 - -s1 * s3],
-        [0, 0, 0]
-    ])
-    pR_pb = ti.Matrix([
-        [c1 * -s2, c1 * c2 * s3, c1 * c3 * c2],
-        [-s2 * s1, s1 * c2 * s3, c3 * s1 * c2],
-        [-c2, -s2 * s3, -s2 * c3]
-    ])
-    pR_pc = ti.Matrix([
-        [0, c1 * s2 * c3 - -s3 * s1, s1 * c3 + c1 * -s3 * s2],
-        [0, c1 * -s3 + s1 * s2 * c3, -s3 * s1 * s2 - c1 * c3],
-        [0, c2 * c3, c2 * -s3]
-    ])
-    t = ti.Matrix.cols([pR_pa @ _r, pR_pb @ _r, pR_pc @ _r])
+    R = R0[None]
+    M = skew(R @ _r)
 
     for i, j in ti.static(ti.ndrange(3, 3)):
-        ret[i, j] = t[i, j]
+        ret[i, j] = M[i, j]
 
 @ti.kernel
-def Rq_r_dot(q: ti.template(), q_dot: ti.template(), 
+def wR_dot_r(R0: ti.template(), q_dot: ti.template(), 
     r0: float, 
     r1: float, 
     r2: float, 
@@ -169,78 +141,10 @@ def Rq_r_dot(q: ti.template(), q_dot: ti.template(),
     '''
     
     '''
-    a, b, c = q[None][3], q[None][4], q[None][5]
-    d1, d2, d3 = q_dot[None][3], q_dot[None][4], q_dot[None][5]
-
-    s1 = sin(a)
-    s2 = sin(b)
-    s3 = sin(c)
-
-    c1 = cos(a)
-    c2 = cos(b)
-    c3 = cos(c)
-
+    omega = ti.Vector([q_dot[None][3], q_dot[None][4], q_dot[None][5]])
     r = ti.Vector([r0, r1, r2])
-    R = ti.Matrix([
-        [c1 * c2, c1 * s2 * s3 - c3 * s1, s1 * s3 + c1 * c3 * s2],
-        [c2 * s1, c1 * c3 + s1 * s2 * s3, c3 * s1 * s2 - c1 * s3],
-        [-s2, c2 * s3, c2 * c3]
-    ])
-    pR_pa = ti.Matrix([
-        [-s1 * c2, -s1 * s2 * s3 - c3 * c1, c1 * s3 + -s1 * c3 * s2],
-        [c2 * c1, -s1 * c3 + c1 * s2 * s3, c3 * c1 * s2 - -s1 * s3],
-        [0, 0, 0]
-    ])
-    pR_pb = ti.Matrix([
-        [c1 * -s2, c1 * c2 * s3, c1 * c3 * c2],
-        [-s2 * s1, s1 * c2 * s3, c3 * s1 * c2],
-        [-c2, -s2 * s3, -s2 * c3]
-    ])
-    pR_pc = ti.Matrix([
-        [0, c1 * s2 * c3 - -s3 * s1, s1 * c3 + c1 * -s3 * s2],
-        [0, c1 * -s3 + s1 * s2 * c3, -s3 * s1 * s2 - c1 * c3],
-        [0, c2 * c3, c2 * -s3]
-    ])
-    R_dot = pR_pa * d1 + pR_pb * d2 + pR_pc * d3
-
-    pR2_paa = ti.Matrix([
-        [-c1 * c2, -c1 * s2 * s3 - c3 * -s1, -s1 * s3 + -c1 * c3 * s2],
-        [c2 * -s1, -c1 * c3 + -s1 * s2 * s3, c3 * -s1 * s2 - -c1 * s3],
-        [0, 0, 0]
-    ])
-
-    pR2_pab = ti.Matrix([
-        [-s1 * -s2, -s1 * c2 * s3, -s1 * c3 * c2],
-        [-s2 * c1, c1 * c2 * s3, c3 * c1 * c2],
-        [0, 0, 0]
-    ])
-    pR2_pbb = ti.Matrix([
-        [c1 * -c2, c1 * -s2 * s3, c1 * c3 * -s2],
-        [-c2 * s1, s1 * -s2 * s3, c3 * s1 * -s2],
-        [s2, -c2 * s3, -c2 * c3]
-    ])
-
-    pR2_pac = ti.Matrix([
-        [0, -s1 * s2 * c3 - -s3 * c1, c1 * c3 + -s1 * -s3 * s2],
-        [0, -s1 * -s3 + c1 * s2 * c3, -s3 * c1 * s2 - -s1 * c3],
-        [0, 0, 0]
-    ])
-    pR2_pbc = ti.Matrix([
-        [0, c1 * c2 * c3, c1 * -s3 * c2],
-        [0, s1 * c2 * c3, -s3 * s1 * c2],
-        [0, -s2 * c3, -s2 * -s3]
-    ])
-    pR2_pcc = ti.Matrix([
-        [0, c1 * s2 * -s3 - -c3 * s1, s1 * -s3 + c1 * -c3 * s2],
-        [0, c1 * -c3 + s1 * s2 * -s3, -c3 * s1 * s2 - c1 * -s3],
-        [0, c2 * -s3, c2 * -c3]
-    ])
-
-    dpR_pa = pR2_paa * d1 + pR2_pab * d2 + pR2_pac * d3
-    dpR_pb = pR2_pab * d1 + pR2_pbb * d2 + pR2_pbc * d3
-    dpR_pc = pR2_pac * d1 + pR2_pbc * d2 + pR2_pcc * d3
-
-    M = ti.Matrix.cols([dpR_pa @ r, dpR_pb @ r, dpR_pc @ r])
+    R = R0[None]
+    M = skew(skew(omega) @ R @ r)
 
     for i, j in ti.static(ti.ndrange(3, 3)):
         ret[i, j] = M[i, j]
@@ -712,7 +616,10 @@ class Cube:
 
     @ti.kernel
     def update_q(self, dt: float):
+        q_ = self.q_dot[None]
         self.q[None] += self.q_dot[None] * dt
+        omega = ti.Vector([q_[3], q_[4], q_[5]])
+        self.R0[None] += skew(omega) @ self.R0[None] * dt
 
     def traverse(self, q__, dt=1e-4):
         '''
@@ -726,23 +633,22 @@ class Cube:
 
     def q_dot_assemble(self):
         _q_dot = self.q_dot.to_numpy()
+        _q = self.q.to_numpy()
 
         q_dot_arr = _q_dot if not lagrange or self.parent is None else _q_dot[3:]
+        q_arr = _q
         for c in self.children:
-            arr = c.q_dot_assemble()
+            arr, arr2 = c.q_dot_assemble()
+            q_arr = np.hstack([q_arr, arr2])
             q_dot_arr = np.hstack([q_dot_arr, arr])
-        return q_dot_arr
+        return q_dot_arr, q_arr
 
     @ti.kernel
-    def project_vertices(self, dx: ti.types.ndarray()):
-        # dt = 1e-4
+    def project_vertices(self):
         for i in ti.static(range(3)):
-            self.p[None][i] += dx[i, 0]
-        # FIXME: dx shape probably wrong
-
+            self.p[None][i] = self.q[None][i]
         for i in ti.static(range(8)):
             self.v_transformed[i] = self.R0[None] @ self.vertices[i] + self.p[None]
-        # print(self.p[None], self.R0[None])
 
     def aggregate_force(self):
         global globals
@@ -825,26 +731,6 @@ class Cube:
         for c in self.children:
             c.particles(scene)
 
-    # TODO: solve constrained rigid body system
-    # @ti.kernel
-    # def fill_R0q_k(self):
-    #     '''
-    #     side effect: update R0
-    #     '''
-    #     _Rq = Rq(q[3], q[4], q[5])
-    #     if ti.static(self.parent is None):
-    #         globals.R0q_pk[self.id] = _Rq
-    #     else:
-    #         q = self.q[None]
-    #         R_k = rotation(q[3], q[4], q[5])
-
-    #         R0_pk = self.parent.R0[None]
-    #         for i in globals.R0q_pk:
-    #             if ti.static(i == self.id):
-    #                 globals.R0q_k[i] = R0_pk @ _Rq
-    #             else :
-    #                 globals.R0q_k[i] = globals.R0q_pk[i] @ R_k
-
     def fill_Jc(self):
         global globals
         '''
@@ -853,52 +739,63 @@ class Cube:
         q layout:
         q_1[0:6], q_2[0:6],..., q_n[0:6], 
         '''
-        # Rq_rpkl = np.zeros((3, n_dofs), np.float32)
-        # Rq_rlk = np.zeros((3, n_dofs), np.float32)
-        
-        # self.fill_R0q_k()
-        # field_Mvp(globals.R0q_pk, ti.Vector(self.r_pkl_hat, float), Rq_rpkl)
-        # field_Mvp(globals.R0q_k, -ti.Vector(self.r_lk_hat, float), Rq_rlk)
-
-        # Jv_pk = np.zeros((3, n_dofs), np.float32)
-        # Jv_k = np.zeros((3, n_dofs), np.float32)
-
-        # pi0 = self.parent.id * 6
-        # i0 = self.id * 6
-        # Jv_pk[:, pi0 : pi0 + 3] += self.parent.m
-        # Jv_k[:, i0: i0 + 3] += self.m
-
-        # if self.parent is not None:
-        #     globals.Jc[(self.id - 1) * 3 : self.id * 3, :] = Jv_pk + Rq_rpkl 
-        #     # self.fill_Jvk()
-        #     globals.Jc[(self.id - 1) * 3 : self.id * 3, :] -= Jv_k + Rq_rlk
         
         pk = self.parent.id
         k = self.id
-        q_pk = self.parent.q
-        q_k = self.q
-        Rq_pk = np.zeros((3,3), np.float32)
-        Rq_k = np.zeros((3,3), np.float32)
+        # q_pk = self.parent.q
+        # q_k = self.q
+        Rr_pk = np.zeros((3,3), np.float32)
+        Rr_k = np.zeros((3,3), np.float32)
         lines = np.zeros((3, n_dofs), np.float32)
 
         # lines = globals.Jc[3 * (k -1) * 3 : 3 * k, :]
 
-        Rq_r(q_pk, 
+        skew_Rr(self.parent.R0, 
             self.r_pkl_hat[0], 
             self.r_pkl_hat[1], 
             self.r_pkl_hat[2], 
-            Rq_pk)
-        Rq_r(q_k, 
+            Rr_pk)
+
+        skew_Rr(self.R0, 
             -self.r_lk_hat[0],
             -self.r_lk_hat[1],
             -self.r_lk_hat[2],
-            Rq_k)
+            Rr_k)
         lines[:, 6 * pk: 6 * pk + 3] = np.identity(3, np.float32) 
         lines[:, 6 * k: 6 * k + 3] = -np.identity(3, np.float32) 
-        lines[:, 6 * pk + 3: 6 * pk + 6] = Rq_pk
-        lines[:, 6 * k + 3: 6 * k + 6] = -Rq_k
+        lines[:, 6 * pk + 3: 6 * pk + 6] = -Rr_pk
+        lines[:, 6 * k + 3: 6 * k + 6] = +Rr_k
 
         globals.Jc[3 * (k -1) * 3 : 3 * k, :] = lines
+
+    def fill_Jc_dot(self):
+        global globals
+        pk = self.parent.id
+        k = self.id
+        # q_pk = self.parent.q
+        # q_k = self.q
+        q_dot_pk = self.parent.q_dot
+        q_dot_k = self.q_dot
+        R_dot_r_pk = np.zeros((3,3), np.float32)
+        R_dot_r_k = np.zeros((3,3), np.float32)
+        lines = np.zeros((3, n_dofs), np.float32)
+
+        wR_dot_r(self.parent.R0, q_dot_pk, 
+            self.r_pkl_hat[0], 
+            self.r_pkl_hat[1], 
+            self.r_pkl_hat[2], 
+            R_dot_r_pk)
+
+        wR_dot_r(self.R0, q_dot_k, 
+            -self.r_lk_hat[0], 
+            -self.r_lk_hat[1], 
+            -self.r_lk_hat[2], 
+            R_dot_r_k)
+
+        lines[:, 6 * pk + 3: 6 * pk + 6] = -R_dot_r_pk
+        lines[:, 6 * k + 3: 6 * k + 6] = R_dot_r_k
+
+        globals.Jc_dot[3 * (k -1) * 3 : 3 * k, :] = lines
 
     def fill_W(self, W):
         i0 = self.id * 6
@@ -907,60 +804,56 @@ class Cube:
         for c in self.children:
             c.fill_W(W)
 
-    def fill_Jc_dot(self):
-        global globals
-        pk = self.parent.id
-        k = self.id
-        q_pk = self.parent.q
-        q_k = self.q
-        q_dot_pk = self.parent.q_dot
-        q_dot_k = self.q_dot
-        Rq_dot_pk = np.zeros((3,3), np.float32)
-        Rq_dot_k = np.zeros((3,3), np.float32)
-        lines = np.zeros((3, n_dofs), np.float32)
-
-        Rq_r_dot(q_pk, q_dot_pk, 
-            self.r_pkl_hat[0], 
-            self.r_pkl_hat[1], 
-            self.r_pkl_hat[2], 
-            Rq_dot_pk)
-
-        Rq_r_dot(q_k, q_dot_k, 
-            -self.r_lk_hat[0], 
-            -self.r_lk_hat[1], 
-            -self.r_lk_hat[2], 
-            Rq_dot_k)
-
-        lines[:, 6 * pk + 3: 6 * pk + 6] = Rq_dot_pk
-        lines[:, 6 * k + 3: 6 * k + 6] = -Rq_dot_k
-
-        globals.Jc_dot[3 * (k -1) * 3 : 3 * k, :] = lines
-
     def solve_sytem(self):
-        # diag_W = np.zeros((n_dofs), np.float32)
-        # self.fill_W(diag_W)
-        # JcWJcT = globals.Jc @ np.diag(diag_W) @ globals.Jc.T
-        # lam = np.linalg.solve(JcWJcT, -globals.Jc_dot @ globals.q_dot) # - globals.Jc @ W @ Q)
-        # q__ = np.diag(diag_W) @ (globals.Jc.T @ lam) 
-        q__ = np.zeros((n_dofs), np.float32)
+        '''
+        C.. = J. q. + J W Q
+        q. = (v_c0, omega_0, ..., v_cn, omega_n)
+        W = diag(1/m0, 1/Ic0, ..., )
+        Q = (f0, tau0, ..., )
+
+              p(k)              k
+        J. = (0, -[[w]Rr], ..., 0 , -[[w]Rr])
+        J  = (I, -[Rr],    ..., -I, -[[w]Rr])
+        '''
+        diag_W = np.zeros((n_dofs), np.float32)
+        self.fill_W(diag_W)
+        JcWJcT = globals.Jc @ np.diag(diag_W) @ globals.Jc.T
+
+        C = np.zeros((3), np.float32)
+        self.compute_C(C)
+        lam = np.linalg.solve(JcWJcT, -globals.Jc_dot @ globals.q_dot - 100 * globals.Jc @ globals.q_dot - 1e4 * C) # - globals.Jc @ W @ Q)
+        q__ = np.diag(diag_W) @ (globals.Jc.T @ lam) 
+        # print(f"\nC.. = ")
+        # print(globals.Jc_dot @ globals.q_dot + globals.Jc @ q__)
+
+        # print(f"\nC. = ")
+        # print(globals.Jc @ globals.q_dot)
         return q__
-    
+
+    @ti.kernel
+    def compute_C(self, C: ti.types.ndarray()):
+        xl_k = self.children[0].v_transformed[7]
+
+        dx = self.v_transformed[0] - xl_k 
+        for i in ti.static(range(3)):
+            C[i] = dx[i]
+
+        # print("C = ")
+        # print(dx)
+
     def top_down_constrained(self):
         global globals
         dt = 1e-4
 
-        # FIXME: clean up
         if self.parent is None:
-            globals.q_dot = self.q_dot_assemble()
+            globals.q_dot, globals.q = self.q_dot_assemble()
             globals.Jc = np.zeros_like(globals.Jc)
             globals.Jc_dot = np.zeros_like(globals.Jc_dot)
         else :
             self.fill_Jc()
             self.fill_Jc_dot()
-            # FIXME: very slow
 
-        dxc = globals.q_dot[self.id * 6: self.id * 6 + 3].reshape((-1, 1)) * dt
-        self.project_vertices(dxc)
+        self.project_vertices()
 
         for c in self.children:
             c.top_down_constrained()
@@ -991,8 +884,8 @@ def main():
     camera_pos = np.array([0.0, 0.0, 3.0])
     camera_dir = np.array([0.0, 0.0, -1.0])
 
-    cube = Cube(0, omega=[0.0, 0.0, 0.0])
-    link = None if n_cubes < 2 else Cube(1, omega=[1., 0., 0.], pos = [-1., -1., -1.] if not centered else [-0.5, -0.5, -0.5], parent= cube) 
+    cube = Cube(0, omega=[10.0, 10.0, 10.0])
+    link = None if n_cubes < 2 else Cube(1, omega=[10., 0., 0.], pos = [-1., -1., -1.] if not centered else [-0.5, -0.5, -0.5], parent= cube) 
     link3 = None if n_cubes < 3 else Cube(2, pos = [-2., -2., -2.], parent = link)
     root = cube
 
