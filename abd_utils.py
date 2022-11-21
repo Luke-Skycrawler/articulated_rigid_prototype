@@ -98,8 +98,11 @@ class AffineCube(Cube):
         super().__init__(id, scale=scale, omega=omega, pos=pos, parent=parent, Newton_Euler=Newton_Euler)
         self.q = ti.Vector.field(3, float, shape = (4))
         self.q_dot = ti.Vector.field(3, float, shape = (4))
-        self.init_q_q_dot()
-    
+        self._reset()
+        for c in self.children:
+            c._reset()
+        # self.init_q_q_dot()
+
     @ti.kernel
     def init_q_q_dot(self):
         R = skew(self.omega[None])
@@ -124,7 +127,7 @@ class AffineCube(Cube):
         gf_np = grad_field.to_numpy().reshape((1, -1))
         globals.g[i0: i0 + 12] = gf_np
         for c in self.children:
-            grad_Eo(c.q)
+            c.grad_Eo_top_down()
 
     def hess_Eo_top_down(self):
         global globals
@@ -135,8 +138,8 @@ class AffineCube(Cube):
         globals.H[i0: i0 + 12, i0: i0 + 12] = hf_np
 
         for c in self.children:
-            hess_Eo(c.q)
-
+            c.hess_Eo_top_down()
+    
     @ti.kernel
     def project_vertices(self):
         for i in ti.static(range(8)):
@@ -189,7 +192,8 @@ def main():
     
     C = np.zeros((m, n_dof), np.float32) if link is None else fill_C(1, 0, -link.r_lk_hat.to_numpy(), link.r_pkl_hat.to_numpy())
     V, V_inv = U(C)
-    # print(V @ V_inv)
+    # V_inv = np.identity(n_dof, np.float32)
+    # print(np.max(V @ V_inv - np.identity(n_dof, np.float32)))
 
     # copied code ---------------------------------------
     mouse_staled = np.zeros(2, dtype=np.float32)
@@ -242,13 +246,14 @@ def main():
             # print(f'shape V_inv = {V_inv.shape}, g = {globals.g.shape}, M = {M.shape}, q - q_tiled = {(q - q_tiled).T.shape}')
             grad = V_inv.T @ (globals.g.reshape((-1, 1)) * dt ** 2 + M @ (q - q_tiled).T)
             
-            hess = V_inv.T @ (globals.H * dt ** 2 + M * np.identity(n_dof, np.float32)) @ V_inv 
+            hess = V_inv.T @ (globals.H * dt ** 2 + M) @ V_inv 
 
             # set rows and columns to zero
             # grad[0: 3] = np.zeros((3), np.float32)
             # hess[0:3, :] = np.zeros((3, n_dof), np.float32)
             # hess[:, 0: 3] = np.zeros((n_dof, 3), np.float32)
             dz = -np.linalg.solve(hess[m: , m: ], grad[m: ])
+            # set z_i = s_i if s_i != 0
             dz = np.hstack([np.zeros((1, m), np.float32), dz.reshape(1, -1)])
             dq = dz @ V_inv.T
             q += dq
