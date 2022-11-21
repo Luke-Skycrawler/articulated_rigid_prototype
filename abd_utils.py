@@ -4,7 +4,8 @@ from arp import Cube, skew
 ti.init(ti.x64, default_fp=ti.f32)
 
 n_cubes = 2
-m = (n_cubes - 1) * 3
+hinge = True
+m = (n_cubes - 1) * 3 if not hinge else (n_cubes - 1) * 6
 n_dof = 12 * n_cubes
 delta = 0.08
 centered = False
@@ -40,11 +41,19 @@ def U(C):
     identity already up front
     '''
     V = np.zeros((n, n), np.float32)
+    if hinge:
+        C[3:6, :] -= C[:3, :]
+        C[3:6, :] *= -1.
+        # no need to reorder for this selected hinge
+        print(C[:, : 12])
     V[:m, :] = C
     V[m:, m:] = np.identity(n-m, np.float32)
     V_inv = -V
     V_inv[m:, m:] = np.identity(n - m, np.float32)
-    V_inv[:m, :m] = np.identity(m, np.float32)
+    V_inv[:3, :3] = np.identity(3, np.float32)
+    if hinge:
+        V_inv[3:6, 3:6] = np.identity(3, np.float32)
+        V_inv[:3, 15:18] = np.zeros((3,3), np.float32)
     return V, V_inv
 
 
@@ -189,12 +198,23 @@ def main():
     camera_dir = np.array([0.0, 0.0, -1.0])
 
     root = AffineCube(0, omega = [10., 0., 0.])
-    link = None if n_cubes < 2 else AffineCube(1, omega=[-10., 0., 0.], pos = [-1., -1., -1.] if not centered else [-0.5, -0.5, -0.5], parent = root) 
+    pos = [0., -1., 1.] if hinge else [-1., -1., -1.] if not centered else [-0.5, -0.5, -0.5]
+    link = None if n_cubes < 2 else AffineCube(1, omega=[-10., 0., 0.], pos = pos, parent = root) 
     
     C = np.zeros((m, n_dof), np.float32) if link is None else fill_C(1, 0, -link.r_lk_hat.to_numpy(), link.r_pkl_hat.to_numpy())
+    if hinge:
+        v = link.vertices.to_numpy()
+        # print("7, 6, 1, 0", v[7], v[6], v[1], v[0])
+        C_p1 = fill_C(1, 0, v[6], v[5])
+        C_p2 = fill_C(1, 0, v[2], v[1])
+        C = np.vstack([C_p1, C_p2])
+        # q, q_dot = root.assemble_q_q_dot()
+        # print(C[:, : 12])
+        # print(C @ q.T)
+
     V, V_inv = U(C)
     # V_inv = np.identity(n_dof, np.float32)
-    # print(np.max(V @ V_inv - np.identity(n_dof, np.float32)))
+    print(np.max(V @ V_inv - np.identity(n_dof, np.float32)))
 
     # copied code ---------------------------------------
     mouse_staled = np.zeros(2, dtype=np.float32)
