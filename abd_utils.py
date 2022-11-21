@@ -236,12 +236,13 @@ def main():
             root._reset()
         if window.is_pressed(ti.GUI.ESCAPE):
             quit()
-
-        if (mouse_staled == 0.0).all():
+        if window.is_pressed(ti.GUI.LMB):
+                
+            if (mouse_staled == 0.0).all():
+                mouse_staled = mouse
+            dmouse = mouse - mouse_staled
+            camera_dir += dmouse * 1.0
             mouse_staled = mouse
-        dmouse = mouse - mouse_staled
-        camera_dir += dmouse * 1.0
-        mouse_staled = mouse
 
         camera.position(*camera_pos)
         camera.lookat(*(camera_pos + camera_dir))
