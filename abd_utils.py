@@ -17,9 +17,10 @@ dt = 3e-4
 
 def fill_C(k, pk, r_kl, r_pkl):
     line = np.zeros((3, n_dof))
+    line_pk = np.zeros((3, n_dof))
     fill_Jck(line, k, r_kl)
-    fill_Jck(line, pk, r_pkl)
-    return line
+    fill_Jck(line_pk, pk, r_pkl)
+    return line_pk - line
 
 def fill_Jck(line, k, r_kl):
     k0 = k * 12
@@ -256,6 +257,7 @@ def main():
             # set z_i = s_i if s_i != 0
             dz = np.hstack([np.zeros((1, m), np.float32), dz.reshape(1, -1)])
             dq = dz @ V_inv.T
+            # print("norm(C dq) = ", np.max(C @ dq.T))
             q += dq
             
         root.traverse(q)
