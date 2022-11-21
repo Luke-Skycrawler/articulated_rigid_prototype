@@ -3,7 +3,7 @@ import numpy as np
 from arp import Cube, skew
 ti.init(ti.x64, default_fp=ti.f32)
 
-n_cubes = 1
+n_cubes = 2
 m = (n_cubes - 1) * 3
 n_dof = 12 * n_cubes
 delta = 0.08
@@ -80,16 +80,16 @@ def grad_Eo(q: ti.template()):
     for i in range(1, 4):
         g = ti.Vector.zero(float, 3)
         for j in range(1, 4):
-            g += (q[i].dot(q[j] - kronecker(i, j))) * q[j]
+            g += (q[i].dot(q[j]) - kronecker(i, j)) * q[j]
         grad_field[i] = 4 * kappa * g
 
 @ti.kernel
 def hess_Eo(q: ti.template()):
     for i, j in ti.ndrange((1, 4), (1, 4)):
         # partial i, partial j
-        h = ti.Matrix.zero(float, 3, 3)
-        for k in range(1, 4):
-            h += q[k] @ q[i].transpose() * kronecker(k, j) + kronecker(k, j) * ti.Matrix.identity(float, 3) * (q[i].dot(q[k]) - kronecker(i, k))
+        # h = ti.Matrix.zero(float, 3, 3)
+        k = j
+        h = (q[k] @ q[i].transpose() + ti.Matrix.identity(float, 3) * (q[i].dot(q[k]) - kronecker(i, k)))
         hess_field[i, j] = 4 * kappa * h
 
 @ti.data_oriented
@@ -248,8 +248,9 @@ def main():
             # grad[0: 3] = np.zeros((3), np.float32)
             # hess[0:3, :] = np.zeros((3, n_dof), np.float32)
             # hess[:, 0: 3] = np.zeros((n_dof, 3), np.float32)
-            dq = -np.linalg.solve(hess[m: , m: ], grad[m: ])
-            dq = np.hstack([np.zeros((1, m), np.float32), dq.reshape(1, -1)])
+            dz = -np.linalg.solve(hess[m: , m: ], grad[m: ])
+            dz = np.hstack([np.zeros((1, m), np.float32), dz.reshape(1, -1)])
+            dq = dz @ V_inv.T
             q += dq
             
         root.traverse(q)
