@@ -3,14 +3,17 @@ import numpy as np
 from arp import Cube, skew
 ti.init(ti.x64, default_fp=ti.f32)
 
-n_cubes = 2
+n_cubes = 1
+m = (n_cubes - 1) * 3
 n_dof = 12 * n_cubes
 delta = 0.08
+centered = False
+kappa = 1e5
 max_iters = 10
 dim_grad = 4
 grad_field = ti.Vector.field(3, float, shape = (dim_grad))
 hess_field = ti.Matrix.field(3,3, float, shape = (dim_grad, dim_grad))
-dt = 1e-4
+dt = 3e-4
 
 def fill_C(k, pk, r_kl, r_pkl):
     line = np.zeros((3, n_dof))
@@ -40,7 +43,7 @@ def U(C):
     V[m:, m:] = np.identity(n-m, np.float32)
     V_inv = -V
     V_inv[m:, m:] = np.identity(n - m, np.float32)
-    V_inv[:3, :3] = np.identity(3, np.float32)
+    V_inv[:m, :m] = np.identity(m, np.float32)
     return V, V_inv
 
 
@@ -67,7 +70,6 @@ class Global:
         
 globals = Global()
 
-kappa = 1e6
 
 @ti.func
 def kronecker(i, j):
@@ -96,13 +98,24 @@ class AffineCube(Cube):
         super().__init__(id, scale=scale, omega=omega, pos=pos, parent=parent, Newton_Euler=Newton_Euler)
         self.q = ti.Vector.field(3, float, shape = (4))
         self.q_dot = ti.Vector.field(3, float, shape = (4))
-        self.init_q_dot()
+        self.init_q_q_dot()
     
     @ti.kernel
-    def init_q_dot(self):
+    def init_q_q_dot(self):
         R = skew(self.omega[None])
+        I = ti.Matrix.identity(float, 3)
+        self.q[0] = self.p[None]
         for i, j in ti.static(ti.ndrange(3, 3)):
             self.q_dot[i + 1][j] = R[i, j]
+            self.q[i + 1][j] = I[i, j]
+    
+    def _reset(self):
+        self.p[None] = ti.Vector(self.initial_state[0])
+        self.omega[None] = ti.Vector(self.initial_state[1])
+        self.init_q_q_dot()
+        for c in self.children:
+            c._reset()
+
 
     def grad_Eo_top_down(self):
         global globals
@@ -171,9 +184,10 @@ def main():
     camera_pos = np.array([0.0, 0.0, 3.0])
     camera_dir = np.array([0.0, 0.0, -1.0])
 
-    root = AffineCube(0)
-    link = AffineCube(1, parent = root)
-    C = fill_C(1, 0, -link.r_lk_hat.to_numpy(), link.r_pkl_hat.to_numpy())
+    root = AffineCube(0, omega = [10., 0., 0.])
+    link = None if n_cubes < 2 else AffineCube(1, omega=[-10., 0., 0.], pos = [-1., -1., -1.] if not centered else [-0.5, -0.5, -0.5], parent = root) 
+    
+    C = np.zeros((m, n_dof), np.float32) if link is None else fill_C(1, 0, -link.r_lk_hat.to_numpy(), link.r_pkl_hat.to_numpy())
     V, V_inv = U(C)
     # print(V @ V_inv)
 
@@ -194,7 +208,7 @@ def main():
         if window.is_pressed('s'):
             camera_pos[2] += delta
         if window.is_pressed('r'):
-            root.reset()
+            root._reset()
         if window.is_pressed(ti.GUI.ESCAPE):
             quit()
 
@@ -234,8 +248,8 @@ def main():
             # grad[0: 3] = np.zeros((3), np.float32)
             # hess[0:3, :] = np.zeros((3, n_dof), np.float32)
             # hess[:, 0: 3] = np.zeros((n_dof, 3), np.float32)
-            dq = -np.linalg.solve(hess[3: , 3: ], grad[3: ])
-            dq = np.hstack([np.zeros((1, 3), np.float32), dq.reshape(1, -1)])
+            dq = -np.linalg.solve(hess[m: , m: ], grad[m: ])
+            dq = np.hstack([np.zeros((1, m), np.float32), dq.reshape(1, -1)])
             q += dq
             
         root.traverse(q)
