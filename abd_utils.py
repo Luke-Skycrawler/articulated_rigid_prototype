@@ -14,15 +14,16 @@ centered = False
 kappa = 1e5
 max_iters = 10
 dim_grad = 4
-grad_field = ti.Vector.field(3, float, shape = (dim_grad))
-hess_field = ti.Matrix.field(3,3, float, shape = (dim_grad, dim_grad))
+grad_field = ti.Vector.field(3, float, shape=(dim_grad))
+hess_field = ti.Matrix.field(3, 3, float, shape=(dim_grad, dim_grad))
 dt = 3e-4
 ZERO = 1e-9
 a_cols = n_cubes * 4
 a_rows = m // 3
-a = ti.field(float, shape = (a_rows, a_cols))
-d = ti.field(float, shape = (a_rows, a_cols))
+a = ti.field(float, shape=(a_rows, a_cols))
+d = ti.field(float, shape=(a_rows, a_cols))
 # dual matrix to get the inverse
+
 
 def fill_C(k, pk, r_kl, r_pkl):
     line = np.zeros((3, n_dof))
@@ -31,12 +32,14 @@ def fill_C(k, pk, r_kl, r_pkl):
     fill_Jck(line_pk, pk, r_pkl)
     return line_pk - line
 
+
 def fill_Jck(line, k, r_kl):
     k0 = k * 12
     line[:, k0: k0 + 3] = np.identity(3, np.float32)
     line[:, k0 + 3: k0 + 6] = r_kl[0] * np.identity(3, np.float32)
     line[:, k0 + 6: k0 + 9] = r_kl[1] * np.identity(3, np.float32)
     line[:, k0 + 9: k0 + 12] = r_kl[2] * np.identity(3, np.float32)
+
 
 @ti.func
 def argmax(i):
@@ -48,6 +51,7 @@ def argmax(i):
             id = j
     return id
 
+
 @ti.func
 def swap_col(i, j):
     for k in ti.static(range(a_rows)):
@@ -57,6 +61,7 @@ def swap_col(i, j):
 
         a[k, j] = t
         d[k, j] = s
+
 
 @ti.kernel
 def gaussian_elimination_row_pivot(C: ti.types.ndarray(), V_inv: ti.types.ndarray()):
@@ -73,27 +78,28 @@ def gaussian_elimination_row_pivot(C: ti.types.ndarray(), V_inv: ti.types.ndarra
             a[i, k] /= a[i, i]
             d[i, k] /= a[i, i]
         for j in range(i+1, a_rows):
-            v = a[j, i] #/ a[i, i]
+            v = a[j, i]  # / a[i, i]
             for k in ti.static(range(a_cols)):
                 a[j, k] -= v * a[i, k]
                 d[j, k] -= v * d[i, k]
     for _i in range(a_rows):
-        i =  a_rows - 1 - _i
+        i = a_rows - 1 - _i
         for j in range(i+1, a_cols):
             if abs(a[i, j]) > ZERO:
-                v = a[i, j]                 
+                v = a[i, j]
                 a[i, j] = 0
 
                 # dik -= aij djk, forall k < cols
                 if j < a_rows:
                     for k in ti.static(range(a_cols)):
-                        d[i, k] -= v *  d[j, k]
+                        d[i, k] -= v * d[j, k]
                 else:
                     d[i, j] -= v
 
     for i, j in ti.static(ti.ndrange(a_rows, a_cols)):
         for k in ti.static(range(3)):
             V_inv[i * 3 + k, j * 3 + k] = d[i, j]
+
 
 def U(C):
     m, n = C.shape[0], C.shape[1]
@@ -119,7 +125,7 @@ def U(C):
     gaussian_elimination_row_pivot(C, _V_inv)
     print(a.to_numpy())
     print(d.to_numpy())
-    _V_inv[m:, m:] = np.identity(n -m, np.float32)
+    _V_inv[m:, m:] = np.identity(n - m, np.float32)
 
     # V_inv = -V
     # V_inv[m:, m:] = np.identity(n - m, np.float32)
@@ -136,28 +142,30 @@ def U(C):
 #     '''
 #     gaussian elimination
 #     row pivot
-#     C_m*n: linear constraint  
+#     C_m*n: linear constraint
 #     return: U_n*n
 #     '''
 #     for i in range(m):
 
 #         max_front()
 #         for j in range(i + 1, m):
-#             range 
-    
+#             range
+
 #     pass
 
 class Global:
     def __init__(self):
         self.g = np.zeros((n_dof), np.float32)
         self.H = np.zeros((n_dof, n_dof), np.float32)
-        
+
+
 globals = Global()
 
 
 @ti.func
 def kronecker(i, j):
-    return 1 if i == j else 0 
+    return 1 if i == j else 0
+
 
 @ti.kernel
 def grad_Eo(q: ti.template()):
@@ -167,21 +175,25 @@ def grad_Eo(q: ti.template()):
             g += (q[i].dot(q[j]) - kronecker(i, j)) * q[j]
         grad_field[i] = 4 * kappa * g
 
+
 @ti.kernel
 def hess_Eo(q: ti.template()):
     for i, j in ti.ndrange((1, 4), (1, 4)):
         # partial i, partial j
         # h = ti.Matrix.zero(float, 3, 3)
         k = j
-        h = (q[k] @ q[i].transpose() + ti.Matrix.identity(float, 3) * (q[i].dot(q[k]) - kronecker(i, k)))
+        h = (q[k] @ q[i].transpose() + ti.Matrix.identity(float, 3)
+             * (q[i].dot(q[k]) - kronecker(i, k)))
         hess_field[i, j] = 4 * kappa * h
+
 
 @ti.data_oriented
 class AffineCube(Cube):
     def __init__(self, id, scale=[1.0, 1.0, 1.0], omega=[0., 0., 0.], pos=[0., 0., 0.], parent=None, Newton_Euler=False):
-        super().__init__(id, scale=scale, omega=omega, pos=pos, parent=parent, Newton_Euler=Newton_Euler)
-        self.q = ti.Vector.field(3, float, shape = (4))
-        self.q_dot = ti.Vector.field(3, float, shape = (4))
+        super().__init__(id, scale=scale, omega=omega, pos=pos,
+                         parent=parent, Newton_Euler=Newton_Euler)
+        self.q = ti.Vector.field(3, float, shape=(4))
+        self.q_dot = ti.Vector.field(3, float, shape=(4))
         self._reset()
         for c in self.children:
             c._reset()
@@ -195,14 +207,13 @@ class AffineCube(Cube):
         for i, j in ti.static(ti.ndrange(3, 3)):
             self.q_dot[i + 1][j] = R[i, j]
             self.q[i + 1][j] = I[i, j]
-    
+
     def _reset(self):
         self.p[None] = ti.Vector(self.initial_state[0])
         self.omega[None] = ti.Vector(self.initial_state[1])
         self.init_q_q_dot()
         for c in self.children:
             c._reset()
-
 
     def grad_Eo_top_down(self):
         global globals
@@ -223,7 +234,7 @@ class AffineCube(Cube):
 
         for c in self.children:
             c.hess_Eo_top_down()
-    
+
     @ti.kernel
     def project_vertices(self):
         for i in ti.static(range(8)):
@@ -240,7 +251,7 @@ class AffineCube(Cube):
         self.project_vertices()
         for c in self.children:
             c.traverse(q)
-    
+
     def fill_M(self, M):
         i0 = self.id * 12
         M[i0: i0 + 3] = self.m
@@ -258,8 +269,11 @@ class AffineCube(Cube):
         return _q, _q_dot
 
 # @ti.func
+
+
 def tiled_q(dt, q_dot_t, q_t, f_tp1):
     return q_t + dt * q_dot_t + dt ** 2 * f_tp1
+
 
 def main():
     window = ti.ui.Window(
@@ -271,11 +285,14 @@ def main():
     camera_pos = np.array([0.0, 0.0, 3.0])
     camera_dir = np.array([0.0, 0.0, -1.0])
 
-    root = AffineCube(0, omega = [10., 0., 0.])
-    pos = [0., -1., 1.] if hinge else [-1., -1., -1.] if not centered else [-0.5, -0.5, -0.5]
-    link = None if n_cubes < 2 else AffineCube(1, omega=[-10., 0., 0.], pos = pos, parent = root) 
-    
-    C = np.zeros((m, n_dof), np.float32) if link is None else fill_C(1, 0, -link.r_lk_hat.to_numpy(), link.r_pkl_hat.to_numpy())
+    root = AffineCube(0, omega=[10., 0., 0.])
+    pos = [0., -1., 1.] if hinge else [-1., -1., -
+                                       1.] if not centered else [-0.5, -0.5, -0.5]
+    link = None if n_cubes < 2 else AffineCube(
+        1, omega=[-10., 0., 0.], pos=pos, parent=root)
+
+    C = np.zeros((m, n_dof), np.float32) if link is None else fill_C(
+        1, 0, -link.r_lk_hat.to_numpy(), link.r_pkl_hat.to_numpy())
     if hinge:
         v = link.vertices.to_numpy()
         # print("7, 6, 1, 0", v[7], v[6], v[1], v[0])
@@ -311,7 +328,7 @@ def main():
         if window.is_pressed(ti.GUI.ESCAPE):
             quit()
         if window.is_pressed(ti.GUI.LMB):
-                
+
             if (mouse_staled == 0.0).all():
                 mouse_staled = mouse
             dmouse = mouse - mouse_staled
@@ -342,26 +359,28 @@ def main():
             # partial E(Uz)/partial z
 
             # print(f'shape V_inv = {V_inv.shape}, g = {globals.g.shape}, M = {M.shape}, q - q_tiled = {(q - q_tiled).T.shape}')
-            grad = V_inv.T @ (globals.g.reshape((-1, 1)) * dt ** 2 + M @ (q - q_tiled).T)
-            
-            hess = V_inv.T @ (globals.H * dt ** 2 + M) @ V_inv 
+            grad = V_inv.T @ (globals.g.reshape((-1, 1)) *
+                              dt ** 2 + M @ (q - q_tiled).T)
+
+            hess = V_inv.T @ (globals.H * dt ** 2 + M) @ V_inv
 
             # set rows and columns to zero
             # grad[0: 3] = np.zeros((3), np.float32)
             # hess[0:3, :] = np.zeros((3, n_dof), np.float32)
             # hess[:, 0: 3] = np.zeros((n_dof, 3), np.float32)
-            dz = -np.linalg.solve(hess[m: , m: ], grad[m: ])
+            dz = -np.linalg.solve(hess[m:, m:], grad[m:])
             # set z_i = s_i if s_i != 0
             dz = np.hstack([np.zeros((1, m), np.float32), dz.reshape(1, -1)])
             dq = dz @ V_inv.T
             # print("norm(C dq) = ", np.max(C @ dq.T))
             q += dq
-            
+
         root.traverse(q)
         root.mesh(scene)
         root.particles(scene)
         canvas.scene(scene)
-        window.show()    
+        window.show()
+
 
 if __name__ == "__main__":
     main()
