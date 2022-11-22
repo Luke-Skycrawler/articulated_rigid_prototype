@@ -942,5 +942,5 @@ def main():
         ts += 1
         # quit()
 
-
-main()
+if __name__ == "__main__":
+    main()
