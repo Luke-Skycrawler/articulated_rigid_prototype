@@ -1,10 +1,12 @@
 import taichi as ti
 import numpy as np
 from arp import Cube, skew
+from scipy.linalg import lu
 ti.init(ti.x64, default_fp=ti.f32)
 
 n_cubes = 2
 hinge = True
+gravity = -np.array([0., -9.8e1, 0.0])
 m = (n_cubes - 1) * 3 if not hinge else (n_cubes - 1) * 6
 n_dof = 12 * n_cubes
 delta = 0.08
@@ -15,6 +17,12 @@ dim_grad = 4
 grad_field = ti.Vector.field(3, float, shape = (dim_grad))
 hess_field = ti.Matrix.field(3,3, float, shape = (dim_grad, dim_grad))
 dt = 3e-4
+ZERO = 1e-9
+a_cols = n_cubes * 4
+a_rows = m // 3
+a = ti.field(float, shape = (a_rows, a_cols))
+d = ti.field(float, shape = (a_rows, a_cols))
+# dual matrix to get the inverse
 
 def fill_C(k, pk, r_kl, r_pkl):
     line = np.zeros((3, n_dof))
@@ -30,6 +38,59 @@ def fill_Jck(line, k, r_kl):
     line[:, k0 + 6: k0 + 9] = r_kl[1] * np.identity(3, np.float32)
     line[:, k0 + 9: k0 + 12] = r_kl[2] * np.identity(3, np.float32)
 
+@ti.func
+def argmax(i):
+    m = 0
+    id = i
+    for j in range(i, a_cols):
+        if abs(a[i, j]) > m:
+            m = abs(a[i, j])
+            id = j
+    return id
+
+@ti.func
+def swap_col(i, j):
+    for k in ti.static(range(a_rows)):
+        t, s = a[k, i], d[k, i]
+        a[k, i] = a[k, j]
+        d[k, i] = d[k, j]
+
+        a[k, j] = t
+        d[k, j] = s
+
+@ti.kernel
+def gaussian_elimination_row_pivot(C: ti.types.ndarray(), V_inv: ti.types.ndarray()):
+    for i, j in ti.static(ti.ndrange(a_rows, a_cols)):
+        a[i, j] = C[i * 3, j * 3]
+
+    for i in ti.static(range(a_rows)):
+        d[i, i] = 1.0
+    for i in range(a_rows):
+        # forward
+        u = argmax(i)
+        swap_col(u, i)
+        for k in ti.static(range(a_cols)):
+            a[i, k] /= a[i, i]
+            d[i, k] /= a[i, i]
+        for j in range(i+1, a_rows):
+            v = a[j, i] / a[i, i]
+            for k in ti.static(range(a_cols)):
+                a[j, k] -= v * a[i, k]
+                d[j, k] -= v * d[i, k]
+    for i in range(a_rows - 1, -1, step = -1):
+        for j in range(i+1, a_cols):
+            if abs(a[i, j]) > ZERO:
+                v = a[i, j]                 
+                a[i, j] = 0
+
+                # dik -= aij djk, forall k < cols
+
+                for k in ti.static(range(a_rows)):
+                    d[i, k] -= v *  d[j, k]
+                d[i, j] -= v
+    for i, j in ti.static(ti.ndrange(a_rows, a_cols)):
+        for k in ti.static(range(3)):
+            V_inv[i * 3 + k, j * 3 + k] = d[i, j]
 
 def U(C):
     m, n = C.shape[0], C.shape[1]
@@ -48,12 +109,15 @@ def U(C):
         print(C[:, : 12])
     V[:m, :] = C
     V[m:, m:] = np.identity(n-m, np.float32)
-    V_inv = -V
-    V_inv[m:, m:] = np.identity(n - m, np.float32)
-    V_inv[:3, :3] = np.identity(3, np.float32)
-    if hinge:
-        V_inv[3:6, 3:6] = np.identity(3, np.float32)
-        V_inv[:3, 15:18] = np.zeros((3,3), np.float32)
+
+    V_inv = np.zeros_like(V)
+    gaussian_elimination_row_pivot(C, V_inv)
+    # V_inv = -V
+    # V_inv[m:, m:] = np.identity(n - m, np.float32)
+    # V_inv[:3, :3] = np.identity(3, np.float32)
+    # if hinge:
+    #     V_inv[3:6, 3:6] = np.identity(3, np.float32)
+    #     V_inv[:3, 15:18] = np.zeros((3,3), np.float32)
     return V, V_inv
 
 
@@ -253,6 +317,8 @@ def main():
         # copied code ---------------------------------------
 
         f = np.zeros((n_dof))
+        f[:3] = root.m * gravity
+        f[12: 15] = link.m * gravity
         q, q_dot = root.assemble_q_q_dot()
         # shape = 1 * 24, transpose before use
         q_tiled = tiled_q(dt, q_dot, q, f)
