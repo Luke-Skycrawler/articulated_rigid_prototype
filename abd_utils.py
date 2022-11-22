@@ -40,7 +40,7 @@ def fill_Jck(line, k, r_kl):
 
 @ti.func
 def argmax(i):
-    m = 0
+    m = 0.0
     id = i
     for j in range(i, a_cols):
         if abs(a[i, j]) > m:
@@ -73,21 +73,24 @@ def gaussian_elimination_row_pivot(C: ti.types.ndarray(), V_inv: ti.types.ndarra
             a[i, k] /= a[i, i]
             d[i, k] /= a[i, i]
         for j in range(i+1, a_rows):
-            v = a[j, i] / a[i, i]
+            v = a[j, i] #/ a[i, i]
             for k in ti.static(range(a_cols)):
                 a[j, k] -= v * a[i, k]
                 d[j, k] -= v * d[i, k]
-    for i in range(a_rows - 1, -1, step = -1):
+    for _i in range(a_rows):
+        i =  a_rows - 1 - _i
         for j in range(i+1, a_cols):
             if abs(a[i, j]) > ZERO:
                 v = a[i, j]                 
                 a[i, j] = 0
 
                 # dik -= aij djk, forall k < cols
+                if j < a_rows:
+                    for k in ti.static(range(a_cols)):
+                        d[i, k] -= v *  d[j, k]
+                else:
+                    d[i, j] -= v
 
-                for k in ti.static(range(a_rows)):
-                    d[i, k] -= v *  d[j, k]
-                d[i, j] -= v
     for i, j in ti.static(ti.ndrange(a_rows, a_cols)):
         for k in ti.static(range(3)):
             V_inv[i * 3 + k, j * 3 + k] = d[i, j]
@@ -110,15 +113,22 @@ def U(C):
     V[:m, :] = C
     V[m:, m:] = np.identity(n-m, np.float32)
 
-    V_inv = np.zeros_like(V)
-    gaussian_elimination_row_pivot(C, V_inv)
+    _V_inv = np.zeros_like(V)
+    d.fill(0.0)
+    a.fill(0.0)
+    gaussian_elimination_row_pivot(C, _V_inv)
+    print(a.to_numpy())
+    print(d.to_numpy())
+    _V_inv[m:, m:] = np.identity(n -m, np.float32)
+
     # V_inv = -V
     # V_inv[m:, m:] = np.identity(n - m, np.float32)
     # V_inv[:3, :3] = np.identity(3, np.float32)
     # if hinge:
     #     V_inv[3:6, 3:6] = np.identity(3, np.float32)
     #     V_inv[:3, 15:18] = np.zeros((3,3), np.float32)
-    return V, V_inv
+    # print((V_inv - _V_inv)[:6])
+    return V, _V_inv
 
 
 # @ti.kernel
@@ -317,8 +327,8 @@ def main():
         # copied code ---------------------------------------
 
         f = np.zeros((n_dof))
-        f[:3] = root.m * gravity
-        f[12: 15] = link.m * gravity
+        # f[:3] = root.m * gravity
+        # f[12: 15] = link.m * gravity
         q, q_dot = root.assemble_q_q_dot()
         # shape = 1 * 24, transpose before use
         q_tiled = tiled_q(dt, q_dot, q, f)
