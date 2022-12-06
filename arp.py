@@ -300,7 +300,7 @@ def load_3x3(A):
 
 @ti.data_oriented
 class Cube:
-    def __init__(self, id, scale=[1.0, 1.0, 1.0], omega=[0., 0., 0.], pos=[0., 0., 0.], parent=None, Newton_Euler=False):
+    def __init__(self, id, scale=[1.0, 1.0, 1.0], omega=[0., 0., 0.], pos=[0., 0., 0.], parent=None, Newton_Euler=False, mass = 1.0):
 
         # generalized coordinates
         self.p = ti.Vector.field(3, float, shape=())
@@ -322,7 +322,7 @@ class Cube:
         self.initial_state = [pos, omega]
         # constants
         self.scale = scale
-        self.m = 1.0
+        self.m = mass
         # self.Ic = ti.Matrix.diag(3, self.m / 12 * scale[0] ** 2)
         self.Ic = self.m / 12 * scale[0] ** 2
 
