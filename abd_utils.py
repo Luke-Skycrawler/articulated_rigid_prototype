@@ -11,12 +11,12 @@ m = (n_cubes - 1) * 3 if not hinge else (n_cubes - 1) * 6
 n_dof = 12 * n_cubes
 delta = 0.08
 centered = False
-kappa = 1e5
+kappa = 1e4
 max_iters = 10
 dim_grad = 4
 grad_field = ti.Vector.field(3, float, shape=(dim_grad))
 hess_field = ti.Matrix.field(3, 3, float, shape=(dim_grad, dim_grad))
-dt = 3e-4
+dt = 1e-2
 ZERO = 1e-9
 a_cols = n_cubes * 4
 a_rows = m // 3
@@ -201,6 +201,7 @@ class AffineCube(Cube):
                          parent=parent, Newton_Euler=Newton_Euler, mass= mass)
         self.q = ti.Vector.field(3, float, shape=(4))
         self.q_dot = ti.Vector.field(3, float, shape=(4))
+        self.q0 = ti.Vector.field(3, float, shape = (4))
         self._reset()
         for c in self.children:
             c._reset()
@@ -219,6 +220,7 @@ class AffineCube(Cube):
         self.p[None] = ti.Vector(self.initial_state[0])
         self.omega[None] = ti.Vector(self.initial_state[1])
         self.init_q_q_dot()
+        self.q0.copy_from(self.q)
         for c in self.children:
             c._reset()
 
@@ -249,19 +251,19 @@ class AffineCube(Cube):
         globals.Eo[i0] = E
         for c in self.children:
             c.Eo_top_down()
-        if self.parent is None:
-            print(f'Eo = {globals.Eo}')
+        # if self.parent is None:
+        #     print(f'Eo = {globals.Eo}')
 
     @ti.kernel
     def project_vertices(self):
         for i in ti.static(range(8)):
-            A = ti.Matrix.cols([self.q[1], self.q[2], self.q[3]])
+            A = ti.Matrix.rows([self.q[1], self.q[2], self.q[3]])
             self.v_transformed[i] = A @ self.vertices[i] + self.q[0]
 
     def traverse(self, q, update_q = True, update_q_dot = True, project = True):
         i0 = self.id * 12
         q_next = q[0, i0: i0 + 12].reshape((4, 3))
-        q_current = self.q.to_numpy()
+        q_current = self.q0.to_numpy()
         q_dot_next = (q_next - q_current) / dt
         q_dot_current = self.q_dot.to_numpy()
 
@@ -272,6 +274,7 @@ class AffineCube(Cube):
         if update_q_dot:
             self.q_dot.from_numpy(q_dot_next)
         if project:
+            self.q0.copy_from(self.q)
             self.project_vertices()
         for c in self.children:
             c.traverse(q, update_q, update_q_dot, project)
@@ -384,6 +387,8 @@ def main():
             root.grad_Eo_top_down()
             root.hess_Eo_top_down()
             root.Eo_top_down()
+            print('E = ', globals.Eo[0] * dt ** 2 + 0.5 * (q - q_tiled) @ M @ (q - q_tiled).T)
+            print("Eo = ", globals.Eo[0])
             # gradient for transformed space
             # partial E(Uz)/partial z
 
@@ -403,9 +408,11 @@ def main():
             dq = dz @ V_inv.T
             # print("norm(C dq) = ", np.max(C @ dq.T))
             q += dq
-            root.traverse(q, update_q = True, update_q_dot = True, project = True)
+            print(dq, q - q_tiled)
+            # root.traverse(q)
+            root.traverse(q, update_q = True, update_q_dot = False, project = False)
 
-        # root.traverse(q)
+        root.traverse(q)
         root.mesh(scene)
         root.particles(scene)
         canvas.scene(scene)
