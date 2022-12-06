@@ -5,13 +5,13 @@ import numpy as np
 
 # FIXME: drifting of the R matrix
 
-ti.init(arch=ti.x64, default_fp=ti.f32)
+ti.init(arch=ti.x64, default_fp=ti.f64)
 
 lagrange = False
 delta = 0.08
 per_trace = 10
 trajectory = ti.Vector.field(3, float, shape=(80))
-gravity = np.array([0.0, -9.8, 0.0], dtype = np.float32)
+gravity = np.array([0.0, -9.8, 0.0], dtype = np.float64)
 n_cubes = 2
 m = 3 * (n_cubes - 1) 
 # n_constraints
@@ -23,22 +23,22 @@ centered = False
 class Globals:
     def __init__(self):
 
-        self.Jw_k = np.zeros((3, n_dofs), dtype=np.float32) if lagrange else None
-        self.Jw_pk = np.zeros((3, n_dofs), dtype=np.float32) if lagrange else None
-        self.Jv_k = np.zeros((3, n_dofs), dtype=np.float32) if lagrange else None
+        self.Jw_k = np.zeros((3, n_dofs), dtype=np.float64) if lagrange else None
+        self.Jw_pk = np.zeros((3, n_dofs), dtype=np.float64) if lagrange else None
+        self.Jv_k = np.zeros((3, n_dofs), dtype=np.float64) if lagrange else None
 
-        self.Jw_pk_dot = np.zeros((3, n_dofs), dtype=np.float32) if lagrange else None
-        self.Jw_k_dot = np.zeros((3, n_dofs), dtype=np.float32) if lagrange else None
-        self.Jv_k_dot = np.zeros((3, n_dofs), dtype=np.float32) if lagrange else None
+        self.Jw_pk_dot = np.zeros((3, n_dofs), dtype=np.float64) if lagrange else None
+        self.Jw_k_dot = np.zeros((3, n_dofs), dtype=np.float64) if lagrange else None
+        self.Jv_k_dot = np.zeros((3, n_dofs), dtype=np.float64) if lagrange else None
 
-        self.M = np.zeros((n_dofs, n_dofs), np.float32) if lagrange else None
+        self.M = np.zeros((n_dofs, n_dofs), np.float64) if lagrange else None
         self.C = np.zeros_like(self.M) if lagrange else None
-        self.f = np.zeros((n_dofs), np.float32) if lagrange else None
-        self.q_dot = np.zeros((n_dofs), np.float32)
-        self.q = np.zeros((n_dofs), np.float32) 
+        self.f = np.zeros((n_dofs), np.float64) if lagrange else None
+        self.q_dot = np.zeros((n_dofs), np.float64)
+        self.q = np.zeros((n_dofs), np.float64) 
 
-        self.Jc = np.zeros((m, n_dofs), np.float32) if not lagrange else None
-        self.Jc_dot = np.zeros((m, n_dofs), np.float32) if not lagrange else None
+        self.Jc = np.zeros((m, n_dofs), np.float64) if not lagrange else None
+        self.Jc_dot = np.zeros((m, n_dofs), np.float64) if not lagrange else None
         
         # self.R0q_k = ti.Matrix.field(3,3, float, shape = (n_cubes * 3))
         # self.R0q_pk = ti.Matrix.field(3,3, float, shape = (n_cubes * 3))
@@ -309,10 +309,10 @@ class Cube:
 
         self.R0 = ti.Matrix.field(3, 3, float, shape=())
         self.R0_dot = ti.Matrix.field(3, 3, float, shape=())
-        # self.R0 = np.zeros((3, 3), dtype = np.float32)
-        # self.R0_dot = np.zeros((3, 3), dtype = np.float32)
-        self.a1 = np.zeros((3, 3), dtype=np.float32)
-        self.a2 = np.zeros((3, 3), dtype=np.float32)
+        # self.R0 = np.zeros((3, 3), dtype = np.float64)
+        # self.R0_dot = np.zeros((3, 3), dtype = np.float64)
+        self.a1 = np.zeros((3, 3), dtype=np.float64)
+        self.a2 = np.zeros((3, 3), dtype=np.float64)
 
         self.q = ti.Vector.field(6, float, shape=())
         self.q_dot = ti.Vector.field(6, float, shape=())
@@ -328,7 +328,7 @@ class Cube:
 
         self.id = id
 
-        self.v_transformed = ti.Vector.field(3, float, shape=(8))
+        self.v_transformed = ti.Vector.field(3, ti.f32, shape=(8))
         self.vertices = ti.Vector.field(3, float, shape=(8))
         self.indices = ti.field(ti.i32, shape=(3 * 12))
         self.faces = ti.Vector.field(4, ti.i32, shape=(6))
@@ -517,7 +517,7 @@ class Cube:
             self.coeff_Jw_pk_Jw_k(globals.Jv_k, self.a1)
             globals.Jv_k -= self.a1 @ globals.Jw_pk
         else:
-            globals.Jv_k[:, : 3] = np.identity(3, np.float32)
+            globals.Jv_k[:, : 3] = np.identity(3, np.float64)
 
     @ti.kernel
     def fill_J_dot_related(self, a1_dot: ti.types.ndarray(), a2_dot: ti.types.ndarray(), Jw_hat: ti.types.ndarray(), Jw_dot_hat: ti.types.ndarray(), tiled_omega_BR: ti.types.ndarray()):
@@ -579,16 +579,16 @@ class Cube:
         global globals
         a1_dot = np.zeros_like(self.a1)
         a2_dot = np.zeros_like(self.a2)
-        Jw_dot_hat = np.zeros((3, 3), np.float32)
-        Jw_hat = np.zeros((3, 3), np.float32)
-        tiled_omega_BR = np.zeros((3, 3), np.float32)
+        Jw_dot_hat = np.zeros((3, 3), np.float64)
+        Jw_hat = np.zeros((3, 3), np.float64)
+        tiled_omega_BR = np.zeros((3, 3), np.float64)
 
         self.fill_J_dot_related(a1_dot, a2_dot, Jw_hat,
                                 Jw_dot_hat, tiled_omega_BR)
         R0_pk_dot = np.zeros(
-            (3, 3), np.float32) if self.parent is None else self.parent.R0_dot.to_numpy()
+            (3, 3), np.float64) if self.parent is None else self.parent.R0_dot.to_numpy()
         R0_pk = np.identity(
-            3, dtype=np.float32) if self.parent is None else self.parent.R0.to_numpy()
+            3, dtype=np.float64) if self.parent is None else self.parent.R0.to_numpy()
         globals.Jw_k_dot = globals.Jw_pk_dot
         globals.Jw_k_dot[:, (self.id + 1) * 3: (self.id + 2)
                          * 3] += R0_pk_dot @ Jw_hat + R0_pk @ Jw_dot_hat
@@ -747,9 +747,9 @@ class Cube:
         k = self.id
         # q_pk = self.parent.q
         # q_k = self.q
-        Rr_pk = np.zeros((3,3), np.float32)
-        Rr_k = np.zeros((3,3), np.float32)
-        lines = np.zeros((3, n_dofs), np.float32)
+        Rr_pk = np.zeros((3,3), np.float64)
+        Rr_k = np.zeros((3,3), np.float64)
+        lines = np.zeros((3, n_dofs), np.float64)
 
         # lines = globals.Jc[3 * (k -1) * 3 : 3 * k, :]
 
@@ -764,8 +764,8 @@ class Cube:
             -self.r_lk_hat[1],
             -self.r_lk_hat[2],
             Rr_k)
-        lines[:, 6 * pk: 6 * pk + 3] = np.identity(3, np.float32) 
-        lines[:, 6 * k: 6 * k + 3] = -np.identity(3, np.float32) 
+        lines[:, 6 * pk: 6 * pk + 3] = np.identity(3, np.float64) 
+        lines[:, 6 * k: 6 * k + 3] = -np.identity(3, np.float64) 
         lines[:, 6 * pk + 3: 6 * pk + 6] = -Rr_pk
         lines[:, 6 * k + 3: 6 * k + 6] = +Rr_k
 
@@ -779,9 +779,9 @@ class Cube:
         # q_k = self.q
         q_dot_pk = self.parent.q_dot
         q_dot_k = self.q_dot
-        R_dot_r_pk = np.zeros((3,3), np.float32)
-        R_dot_r_k = np.zeros((3,3), np.float32)
-        lines = np.zeros((3, n_dofs), np.float32)
+        R_dot_r_pk = np.zeros((3,3), np.float64)
+        R_dot_r_k = np.zeros((3,3), np.float64)
+        lines = np.zeros((3, n_dofs), np.float64)
 
         wR_dot_r(self.parent.R0, q_dot_pk, 
             self.r_pkl_hat[0], 
@@ -802,8 +802,8 @@ class Cube:
 
     def fill_W(self, W):
         i0 = self.id * 6
-        W[i0: i0 + 3] = np.ones(3, np.float32) / self.m
-        W[i0 + 3: i0 + 6] = np.ones(3, np.float32) / self.Ic
+        W[i0: i0 + 3] = np.ones(3, np.float64) / self.m
+        W[i0 + 3: i0 + 6] = np.ones(3, np.float64) / self.Ic
         for c in self.children:
             c.fill_W(W)
 
@@ -818,11 +818,11 @@ class Cube:
         J. = (0, -[[w]Rr], ..., 0 , -[[w]Rr])
         J  = (I, -[Rr],    ..., -I, -[[w]Rr])
         '''
-        diag_W = np.zeros((n_dofs), np.float32)
+        diag_W = np.zeros((n_dofs), np.float64)
         self.fill_W(diag_W)
         JcWJcT = globals.Jc @ np.diag(diag_W) @ globals.Jc.T
 
-        C = np.zeros((3), np.float32)
+        C = np.zeros((3), np.float64)
         self.compute_C(C)
         lam = np.linalg.solve(JcWJcT, -globals.Jc_dot @ globals.q_dot - 100 * globals.Jc @ globals.q_dot - 1e4 * C) # - globals.Jc @ W @ Q)
         q__ = np.diag(diag_W) @ (globals.Jc.T @ lam) 
@@ -892,7 +892,7 @@ def main():
     link3 = None if n_cubes < 3 else Cube(2, pos = [-2., -2., -2.], parent = link)
     root = cube
 
-    mouse_staled = np.zeros(2, dtype=np.float32)
+    mouse_staled = np.zeros(2, dtype=np.float64)
     ts = 0
     while window.running:
         mouse = np.array([*window.get_cursor_pos(), 0.0])

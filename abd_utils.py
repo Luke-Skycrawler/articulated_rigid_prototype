@@ -2,7 +2,7 @@ import taichi as ti
 import numpy as np
 from arp import Cube, skew
 from scipy.linalg import lu, ldl, solve
-ti.init(ti.x64, default_fp=ti.f32)
+ti.init(ti.x64, default_fp=ti.f64)
 
 n_cubes = 2
 hinge = True
@@ -37,10 +37,10 @@ def fill_C(k, pk, r_kl, r_pkl):
 
 def fill_Jck(line, k, r_kl):
     k0 = k * 12
-    line[:, k0: k0 + 3] = np.identity(3, np.float32)
-    line[:, k0 + 3: k0 + 6] = r_kl[0] * np.identity(3, np.float32)
-    line[:, k0 + 6: k0 + 9] = r_kl[1] * np.identity(3, np.float32)
-    line[:, k0 + 9: k0 + 12] = r_kl[2] * np.identity(3, np.float32)
+    line[:, k0: k0 + 3] = np.identity(3, np.float64)
+    line[:, k0 + 3: k0 + 6] = r_kl[0] * np.identity(3, np.float64)
+    line[:, k0 + 6: k0 + 9] = r_kl[1] * np.identity(3, np.float64)
+    line[:, k0 + 9: k0 + 12] = r_kl[2] * np.identity(3, np.float64)
 
 
 @ti.func
@@ -112,14 +112,14 @@ def U(C):
     pivoting not needed for 2 cubes
     identity already up front
     '''
-    V = np.zeros((n, n), np.float32)
+    V = np.zeros((n, n), np.float64)
     if hinge:
         C[3:6, :] -= C[:3, :]
         C[3:6, :] *= -1.
         # no need to reorder for this selected hinge
         print(C[:, : 12])
     V[:m, :] = C
-    V[m:, m:] = np.identity(n-m, np.float32)
+    V[m:, m:] = np.identity(n-m, np.float64)
 
     _V_inv = np.zeros_like(V)
     if d is not None:
@@ -128,14 +128,14 @@ def U(C):
         gaussian_elimination_row_pivot(C, _V_inv)
         print(a.to_numpy())
         print(d.to_numpy())
-    _V_inv[m:, m:] = np.identity(n - m, np.float32)
+    _V_inv[m:, m:] = np.identity(n - m, np.float64)
 
     # V_inv = -V
-    # V_inv[m:, m:] = np.identity(n - m, np.float32)
-    # V_inv[:3, :3] = np.identity(3, np.float32)
+    # V_inv[m:, m:] = np.identity(n - m, np.float64)
+    # V_inv[:3, :3] = np.identity(3, np.float64)
     # if hinge:
-    #     V_inv[3:6, 3:6] = np.identity(3, np.float32)
-    #     V_inv[:3, 15:18] = np.zeros((3,3), np.float32)
+    #     V_inv[3:6, 3:6] = np.identity(3, np.float64)
+    #     V_inv[:3, 15:18] = np.zeros((3,3), np.float64)
     # print((V_inv - _V_inv)[:6])
     return V, _V_inv
 
@@ -158,9 +158,9 @@ def U(C):
 
 class Global:
     def __init__(self):
-        self.g = np.zeros((n_dof), np.float32)
-        self.H = np.zeros((n_dof, n_dof), np.float32)
-        self.Eo = np.zeros((n_cubes), np.float32)
+        self.g = np.zeros((n_dof), np.float64)
+        self.H = np.zeros((n_dof, n_dof), np.float64)
+        self.Eo = np.zeros((n_cubes), np.float64)
 
 
 globals = Global()
@@ -239,7 +239,7 @@ class AffineCube(Cube):
         hess_Eo(self.q)
         i0 = self.id * 12
         _hf_np = hess_field.to_numpy()
-        hf_np = np.zeros((12, 12), np.float32)
+        hf_np = np.zeros((12, 12), np.float64)
         # print(_hf_np)
         # hf_np = hf_np.reshape((12, 12))
         for i in range(4):
@@ -358,9 +358,9 @@ def step(root, M, V_inv):
         hess = V_inv.T @ (globals.H * dt ** 2 + M) @ V_inv
 
         # set rows and columns to zero
-        # grad[0: 3] = np.zeros((3), np.float32)
-        # hess[0:3, :] = np.zeros((3, n_dof), np.float32)
-        # hess[:, 0: 3] = np.zeros((n_dof, 3), np.float32)
+        # grad[0: 3] = np.zeros((3), np.float64)
+        # hess[0:3, :] = np.zeros((3, n_dof), np.float64)
+        # hess[:, 0: 3] = np.zeros((n_dof, 3), np.float64)
 
 
         # dz = -np.linalg.solve(hess[m:, m:], grad[m:])
@@ -369,7 +369,7 @@ def step(root, M, V_inv):
         # print(hess[m:, m:])
         dz = -solve(hess[m:, m:], grad[m:], assume_a = "pos")
         # set z_i = s_i if s_i != 0
-        dz = np.hstack([np.zeros((1, m), np.float32), dz.reshape(1, -1)])
+        dz = np.hstack([np.zeros((1, m), np.float64), dz.reshape(1, -1)])
         dq = dz @ V_inv.T
         # print("norm(C dq) = ", np.max(C @ dq.T))
         alpha = line_search(dq, root, q, grad, q_tiled, M)
@@ -404,7 +404,7 @@ def main():
     link = None if n_cubes < 2 else AffineCube(
         1, omega=[-10., 0., 0.], pos=pos, parent=root, mass = 1e3)
 
-    C = np.zeros((m, n_dof), np.float32) if link is None else fill_C(
+    C = np.zeros((m, n_dof), np.float64) if link is None else fill_C(
         1, 0, -link.r_lk_hat.to_numpy(), link.r_pkl_hat.to_numpy())
     if hinge and link is not None:
         v = link.vertices.to_numpy()
@@ -417,12 +417,12 @@ def main():
         # print(C @ q.T)
 
     V, V_inv = U(C)
-    # V_inv = np.identity(n_dof, np.float32)
-    print(np.max(V @ V_inv - np.identity(n_dof, np.float32)))
+    # V_inv = np.identity(n_dof, np.float64)
+    print(np.max(V @ V_inv - np.identity(n_dof, np.float64)))
     
     # copied code ---------------------------------------
-    mouse_staled = np.zeros(2, dtype=np.float32)
-    diag_M = np.zeros((n_dof), np.float32)
+    mouse_staled = np.zeros(2, dtype=np.float64)
+    diag_M = np.zeros((n_dof), np.float64)
     root.fill_M(diag_M)
     M = np.diag(diag_M)
     print(diag_M)
@@ -452,7 +452,7 @@ def main():
             camera_dir += dmouse * 1.0
             mouse_staled = mouse
         else :
-            mouse_staled = np.zeros(2, dtype=np.float32)
+            mouse_staled = np.zeros(2, dtype=np.float64)
         camera.position(*camera_pos)
         camera.lookat(*(camera_pos + camera_dir))
         scene.set_camera(camera)
