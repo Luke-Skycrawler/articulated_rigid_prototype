@@ -1,7 +1,7 @@
 import taichi as ti
 import numpy as np
 from arp import Cube, skew
-from scipy.linalg import lu
+from scipy.linalg import lu, ldl, solve
 ti.init(ti.x64, default_fp=ti.f32)
 
 n_cubes = 1
@@ -11,12 +11,12 @@ m = (n_cubes - 1) * 3 if not hinge else (n_cubes - 1) * 6
 n_dof = 12 * n_cubes
 delta = 0.08
 centered = False
-kappa = 1e4
+kappa = 1e8
 max_iters = 10
 dim_grad = 4
 grad_field = ti.Vector.field(3, float, shape=(dim_grad))
 hess_field = ti.Matrix.field(3, 3, float, shape=(dim_grad, dim_grad))
-dt = 1e-2
+dt = 1e-3
 ZERO = 1e-9
 a_cols = n_cubes * 4
 a_rows = m // 3
@@ -237,8 +237,16 @@ class AffineCube(Cube):
         global globals
         hess_Eo(self.q)
         i0 = self.id * 12
-        hf_np = hess_field.to_numpy().reshape((12, 12))
-        # FIXME: probably wrong shape
+        _hf_np = hess_field.to_numpy()
+        hf_np = np.zeros((12, 12), np.float32)
+        # print(_hf_np)
+        # hf_np = hf_np.reshape((12, 12))
+        for i in range(4):
+            for j in range(4):
+                hf_np[i * 3: i * 3 + 3, j * 3 : j * 3  +3] = _hf_np[i, j] 
+
+        # print(hf_np)
+        # FIXME: probably wrong shape, fixed
         globals.H[i0: i0 + 12, i0: i0 + 12] = hf_np
 
         for c in self.children:
@@ -296,13 +304,77 @@ class AffineCube(Cube):
         return _q, _q_dot
 
 # @ti.func
-
+c1 = 1e-4
+def line_search(dq, root, q0, grad0):
+    wolfe = False
+    alpha = 1
+    E0 = globals.Eo
+    grad0
+    while not wolfe:
+        q1 = q0 + dq * alpha
+        root.traverse(q1, True, False, False)
+        root.Eo_top_down()
+        E1 = globals.Eo
+        print(dq.shape, grad0.shape)
+        wolfe = E1 <= E0 + c1 * alpha * (dq @ grad0) 
+        alpha /= 2
+        if alpha < 1e-8:
+            print(alpha, "error")
+            quit() 
+    return alpha * 2
 
 def tiled_q(dt, q_dot_t, q_t, f_tp1):
     return q_t + dt * q_dot_t + dt ** 2 * f_tp1
 
+def step(root, M, V_inv):
+    f = np.zeros((n_dof))
+    # f[:3] = root.m * gravity
+    # f[12: 15] = link.m * gravity
+    q, q_dot = root.assemble_q_q_dot()
+    q_tiled = tiled_q(dt, q_dot, q, f)
+    for iter in range(max_iters):
+        q, q_dot = root.assemble_q_q_dot()
+        # shape = 1 * 24, transpose before use
+        print(f'iter = {iter}')
+        root.grad_Eo_top_down()
+        root.hess_Eo_top_down()
+        root.Eo_top_down()
+        print('E = ', globals.Eo[0] * dt ** 2 + 0.5 * (q - q_tiled) @ M @ (q - q_tiled).T)
+        print("Eo = ", globals.Eo[0])
+        # gradient for transformed space
+        # partial E(Uz)/partial z
+
+        # print(f'shape V_inv = {V_inv.shape}, g = {globals.g.shape}, M = {M.shape}, q - q_tiled = {(q - q_tiled).T.shape}')
+        grad = V_inv.T @ (globals.g.reshape((-1, 1)) *
+                            dt ** 2 + M @ (q - q_tiled).T)
+
+        hess = V_inv.T @ (globals.H * dt ** 2 + M) @ V_inv
+
+        # set rows and columns to zero
+        # grad[0: 3] = np.zeros((3), np.float32)
+        # hess[0:3, :] = np.zeros((3, n_dof), np.float32)
+        # hess[:, 0: 3] = np.zeros((n_dof, 3), np.float32)
+        # dz = -np.linalg.solve(hess[m:, m:], grad[m:])
+        # l, d, perm = ldl(hess[m:, m:], lower= 0)
+        # print(hess[m:, m:] - hess[m:, m:].T)
+        # print(hess[m:, m:])
+        dz = -solve(hess[m:, m:], grad[m:], assume_a = "pos")
+        # set z_i = s_i if s_i != 0
+        dz = np.hstack([np.zeros((1, m), np.float32), dz.reshape(1, -1)])
+        dq = dz @ V_inv.T
+        # print("norm(C dq) = ", np.max(C @ dq.T))
+        # alpha = line_search(dq, root, q, grad)
+        # print(f'alpha = {alpha}')
+        alpha = 1.0
+        q += dq * alpha
+        print(dq, q - q_tiled)
+        root.traverse(q, update_q = True, update_q_dot = False, project = False)
+
+    root.traverse(q)
 
 def main():
+    formatter = '{:.2f}'.format
+    np.set_printoptions(formatter={'float_kind': formatter})
     window = ti.ui.Window(
         "Articulated Multibody Simualtion", (800, 800), vsync=True)
     canvas = window.get_canvas()
@@ -374,45 +446,7 @@ def main():
         scene.point_light(pos=(0, 1, 2), color=(1, 1, 1))
         scene.ambient_light((0.5, 0.5, 0.5))
         # copied code ---------------------------------------
-
-        f = np.zeros((n_dof))
-        # f[:3] = root.m * gravity
-        # f[12: 15] = link.m * gravity
-        q, q_dot = root.assemble_q_q_dot()
-        q_tiled = tiled_q(dt, q_dot, q, f)
-        for iter in range(max_iters):
-            q, q_dot = root.assemble_q_q_dot()
-            # shape = 1 * 24, transpose before use
-            print(f'iter = {iter}')
-            root.grad_Eo_top_down()
-            root.hess_Eo_top_down()
-            root.Eo_top_down()
-            print('E = ', globals.Eo[0] * dt ** 2 + 0.5 * (q - q_tiled) @ M @ (q - q_tiled).T)
-            print("Eo = ", globals.Eo[0])
-            # gradient for transformed space
-            # partial E(Uz)/partial z
-
-            # print(f'shape V_inv = {V_inv.shape}, g = {globals.g.shape}, M = {M.shape}, q - q_tiled = {(q - q_tiled).T.shape}')
-            grad = V_inv.T @ (globals.g.reshape((-1, 1)) *
-                              dt ** 2 + M @ (q - q_tiled).T)
-
-            hess = V_inv.T @ (globals.H * dt ** 2 + M) @ V_inv
-
-            # set rows and columns to zero
-            # grad[0: 3] = np.zeros((3), np.float32)
-            # hess[0:3, :] = np.zeros((3, n_dof), np.float32)
-            # hess[:, 0: 3] = np.zeros((n_dof, 3), np.float32)
-            dz = -np.linalg.solve(hess[m:, m:], grad[m:])
-            # set z_i = s_i if s_i != 0
-            dz = np.hstack([np.zeros((1, m), np.float32), dz.reshape(1, -1)])
-            dq = dz @ V_inv.T
-            # print("norm(C dq) = ", np.max(C @ dq.T))
-            q += dq
-            print(dq, q - q_tiled)
-            # root.traverse(q)
-            root.traverse(q, update_q = True, update_q_dot = False, project = False)
-
-        root.traverse(q)
+        step(root, M, V_inv)
         root.mesh(scene)
         root.particles(scene)
         canvas.scene(scene)
