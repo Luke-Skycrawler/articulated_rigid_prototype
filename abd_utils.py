@@ -4,8 +4,8 @@ from arp import Cube, skew
 from scipy.linalg import lu
 ti.init(ti.x64, default_fp=ti.f32)
 
-n_cubes = 2
-hinge = True
+n_cubes = 1
+hinge = False
 gravity = -np.array([0., -9.8e1, 0.0])
 m = (n_cubes - 1) * 3 if not hinge else (n_cubes - 1) * 6
 n_dof = 12 * n_cubes
@@ -20,9 +20,9 @@ dt = 3e-4
 ZERO = 1e-9
 a_cols = n_cubes * 4
 a_rows = m // 3
-alpha = 0.9
-a = ti.field(float, shape=(a_rows, a_cols))
-d = ti.field(float, shape=(a_rows, a_cols))
+alpha = 1.0
+a = ti.field(float, shape=(a_rows, a_cols)) if a_rows and a_cols else None
+d = ti.field(float, shape=(a_rows, a_cols)) if a_rows and a_cols else None
 # dual matrix to get the inverse
 
 
@@ -121,11 +121,12 @@ def U(C):
     V[m:, m:] = np.identity(n-m, np.float32)
 
     _V_inv = np.zeros_like(V)
-    d.fill(0.0)
-    a.fill(0.0)
-    gaussian_elimination_row_pivot(C, _V_inv)
-    print(a.to_numpy())
-    print(d.to_numpy())
+    if d is not None:
+        d.fill(0.0)
+        a.fill(0.0)
+        gaussian_elimination_row_pivot(C, _V_inv)
+        print(a.to_numpy())
+        print(d.to_numpy())
     _V_inv[m:, m:] = np.identity(n - m, np.float32)
 
     # V_inv = -V
@@ -262,9 +263,10 @@ class AffineCube(Cube):
         q_next = q[0, i0: i0 + 12].reshape((4, 3))
         q_current = self.q.to_numpy()
         q_dot_next = (q_next - q_current) / dt
-        q_next = alpha * q_next + (1 - alpha) * q_current
         q_dot_current = self.q_dot.to_numpy()
-        q_dot_next = q_dot_next * alpha + (1 - alpha) * q_dot_current
+
+        # q_next = alpha * q_next + (1 - alpha) * q_current
+        # q_dot_next = q_dot_next * alpha + (1 - alpha) * q_dot_current
         if update_q:
             self.q.from_numpy(q_next)
         if update_q_dot:
@@ -315,7 +317,7 @@ def main():
 
     C = np.zeros((m, n_dof), np.float32) if link is None else fill_C(
         1, 0, -link.r_lk_hat.to_numpy(), link.r_pkl_hat.to_numpy())
-    if hinge:
+    if hinge and link is not None:
         v = link.vertices.to_numpy()
         # print("7, 6, 1, 0", v[7], v[6], v[1], v[0])
         C_p1 = fill_C(1, 0, v[6], v[5])
@@ -360,7 +362,8 @@ def main():
             dmouse = mouse - mouse_staled
             camera_dir += dmouse * 1.0
             mouse_staled = mouse
-
+        else :
+            mouse_staled = np.zeros(2, dtype=np.float32)
         camera.position(*camera_pos)
         camera.lookat(*(camera_pos + camera_dir))
         scene.set_camera(camera)
@@ -400,9 +403,9 @@ def main():
             dq = dz @ V_inv.T
             # print("norm(C dq) = ", np.max(C @ dq.T))
             q += dq
-            root.traverse(q, update_q = True, update_q_dot = False, project = False)
+            root.traverse(q, update_q = True, update_q_dot = True, project = True)
 
-        root.traverse(q)
+        # root.traverse(q)
         root.mesh(scene)
         root.particles(scene)
         canvas.scene(scene)
