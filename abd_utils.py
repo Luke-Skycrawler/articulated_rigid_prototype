@@ -11,7 +11,7 @@ m = (n_cubes - 1) * 3 if not hinge else (n_cubes - 1) * 6
 n_dof = 12 * n_cubes
 delta = 0.08
 centered = False
-kappa = 1e8
+kappa = 1e7
 max_iters = 10
 dim_grad = 4
 grad_field = ti.Vector.field(3, float, shape=(dim_grad))
@@ -21,6 +21,7 @@ ZERO = 1e-9
 a_cols = n_cubes * 4
 a_rows = m // 3
 alpha = 1.0
+trace = False
 a = ti.field(float, shape=(a_rows, a_cols)) if a_rows and a_cols else None
 d = ti.field(float, shape=(a_rows, a_cols)) if a_rows and a_cols else None
 # dual matrix to get the inverse
@@ -190,8 +191,8 @@ def hess_Eo(q: ti.template()):
 
 @ti.kernel
 def Eo(q: ti.template()) -> float:
-    A = ti.Matrix.cols([q[1], q[2], q[3]])
-    return kappa * (A.transpose() @ A - ti.Matrix.identity(float, 3)).norm_sqr()
+    A = ti.Matrix.rows([q[1], q[2], q[3]])
+    return kappa * (A @ A.transpose() - ti.Matrix.identity(float, 3)).norm_sqr()
 
 
 @ti.data_oriented
@@ -305,18 +306,19 @@ class AffineCube(Cube):
 
 # @ti.func
 c1 = 1e-4
-def line_search(dq, root, q0, grad0):
+def line_search(dq, root, q0, grad0, q_tiled, M):
     wolfe = False
     alpha = 1
-    E0 = globals.Eo
-    grad0
-    while not wolfe:
+    E0 = globals.Eo[0] * dt ** 2 + 0.5 * (q0 - q_tiled) @ M @ (q0 - q_tiled).T
+    while not wolfe and np.linalg.norm(grad0) > 1e-3:
         q1 = q0 + dq * alpha
         root.traverse(q1, True, False, False)
         root.Eo_top_down()
-        E1 = globals.Eo
-        print(dq.shape, grad0.shape)
+        E1 = np.sum(globals.Eo) * dt ** 2 + 0.5 * (q1 - q_tiled) @ M @ (q1 - q_tiled).T
+        # print(dq.shape, grad0.shape)
         wolfe = E1 <= E0 + c1 * alpha * (dq @ grad0) 
+        # print(f'dq_norm = {np.linalg.norm(dq)}, grad norm = {np.linalg.norm(grad0)}, dq @ grad = {dq @ grad0}')
+        # print(f'E1 = {E1[0]}, alpha = {alpha}, wolfe rhs = {E0[0] + c1 * alpha * (dq @ grad0)}')
         alpha /= 2
         if alpha < 1e-8:
             print(alpha, "error")
@@ -332,15 +334,20 @@ def step(root, M, V_inv):
     # f[12: 15] = link.m * gravity
     q, q_dot = root.assemble_q_q_dot()
     q_tiled = tiled_q(dt, q_dot, q, f)
-    for iter in range(max_iters):
+    do_iter = True
+    iter = 0
+    while do_iter:
+    # for iter in range(max_iters):
         q, q_dot = root.assemble_q_q_dot()
         # shape = 1 * 24, transpose before use
-        print(f'iter = {iter}')
         root.grad_Eo_top_down()
         root.hess_Eo_top_down()
         root.Eo_top_down()
-        print('E = ', globals.Eo[0] * dt ** 2 + 0.5 * (q - q_tiled) @ M @ (q - q_tiled).T)
-        print("Eo = ", globals.Eo[0])
+        if trace :
+            print(f'iter = {iter}')
+            print('E = ', globals.Eo[0] * dt ** 2 + 0.5 * (q - q_tiled) @ M @ (q - q_tiled).T)
+            print("Eo = ", globals.Eo[0])
+            
         # gradient for transformed space
         # partial E(Uz)/partial z
 
@@ -354,6 +361,8 @@ def step(root, M, V_inv):
         # grad[0: 3] = np.zeros((3), np.float32)
         # hess[0:3, :] = np.zeros((3, n_dof), np.float32)
         # hess[:, 0: 3] = np.zeros((n_dof, 3), np.float32)
+
+        
         # dz = -np.linalg.solve(hess[m:, m:], grad[m:])
         # l, d, perm = ldl(hess[m:, m:], lower= 0)
         # print(hess[m:, m:] - hess[m:, m:].T)
@@ -363,17 +372,22 @@ def step(root, M, V_inv):
         dz = np.hstack([np.zeros((1, m), np.float32), dz.reshape(1, -1)])
         dq = dz @ V_inv.T
         # print("norm(C dq) = ", np.max(C @ dq.T))
-        # alpha = line_search(dq, root, q, grad)
-        # print(f'alpha = {alpha}')
-        alpha = 1.0
+        alpha = line_search(dq, root, q, grad, q_tiled, M)
+        if trace:
+            print(f'alpha = {alpha}')
+        # alpha = 1.0
         q += dq * alpha
-        print(dq, q - q_tiled)
+        # print(dq, q - q_tiled)
         root.traverse(q, update_q = True, update_q_dot = False, project = False)
-
+        do_iter = np.linalg.norm(dq * alpha) > 1e-4
+        iter += 1
+        if not do_iter: 
+            print(f'converge after {iter} iters')
+            
     root.traverse(q)
 
 def main():
-    formatter = '{:.2f}'.format
+    formatter = '{:.2e}'.format
     np.set_printoptions(formatter={'float_kind': formatter})
     window = ti.ui.Window(
         "Articulated Multibody Simualtion", (800, 800), vsync=True)
