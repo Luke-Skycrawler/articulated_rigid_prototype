@@ -20,6 +20,7 @@ dt = 3e-4
 ZERO = 1e-9
 a_cols = n_cubes * 4
 a_rows = m // 3
+alpha = 0.9
 a = ti.field(float, shape=(a_rows, a_cols))
 d = ti.field(float, shape=(a_rows, a_cols))
 # dual matrix to get the inverse
@@ -157,6 +158,7 @@ class Global:
     def __init__(self):
         self.g = np.zeros((n_dof), np.float32)
         self.H = np.zeros((n_dof, n_dof), np.float32)
+        self.Eo = np.zeros((n_cubes), np.float32)
 
 
 globals = Global()
@@ -179,19 +181,23 @@ def grad_Eo(q: ti.template()):
 @ti.kernel
 def hess_Eo(q: ti.template()):
     for i, j in ti.ndrange((1, 4), (1, 4)):
-        # partial i, partial j
-        # h = ti.Matrix.zero(float, 3, 3)
-        k = j
-        h = (q[k] @ q[i].transpose() + ti.Matrix.identity(float, 3)
-             * (q[i].dot(q[k]) - kronecker(i, k)))
+        h = (q[j].dot(q[i]) - kronecker(i, j)) * ti.Matrix.identity(float, 3)
+        for k in range(1, 4):
+            h += (q[i] * kronecker(k, j) + q[k] * kronecker(i, j)) @ q[k].transpose()
+            
         hess_field[i, j] = 4 * kappa * h
+
+@ti.kernel
+def Eo(q: ti.template()) -> float:
+    A = ti.Matrix.cols([q[1], q[2], q[3]])
+    return kappa * (A.transpose() @ A - ti.Matrix.identity(float, 3)).norm_sqr()
 
 
 @ti.data_oriented
 class AffineCube(Cube):
-    def __init__(self, id, scale=[1.0, 1.0, 1.0], omega=[0., 0., 0.], pos=[0., 0., 0.], parent=None, Newton_Euler=False):
+    def __init__(self, id, scale=[1.0, 1.0, 1.0], omega=[0., 0., 0.], pos=[0., 0., 0.], parent=None, Newton_Euler=False, mass = 1.0):
         super().__init__(id, scale=scale, omega=omega, pos=pos,
-                         parent=parent, Newton_Euler=Newton_Euler)
+                         parent=parent, Newton_Euler=Newton_Euler, mass= mass)
         self.q = ti.Vector.field(3, float, shape=(4))
         self.q_dot = ti.Vector.field(3, float, shape=(4))
         self._reset()
@@ -235,22 +241,38 @@ class AffineCube(Cube):
         for c in self.children:
             c.hess_Eo_top_down()
 
+    def Eo_top_down(self):
+        global globals
+        E = Eo(self.q)
+        i0 = self.id
+        globals.Eo[i0] = E
+        for c in self.children:
+            c.Eo_top_down()
+        if self.parent is None:
+            print(f'Eo = {globals.Eo}')
+
     @ti.kernel
     def project_vertices(self):
         for i in ti.static(range(8)):
             A = ti.Matrix.cols([self.q[1], self.q[2], self.q[3]])
             self.v_transformed[i] = A @ self.vertices[i] + self.q[0]
 
-    def traverse(self, q):
+    def traverse(self, q, update_q = True, update_q_dot = True, project = True):
         i0 = self.id * 12
         q_next = q[0, i0: i0 + 12].reshape((4, 3))
         q_current = self.q.to_numpy()
         q_dot_next = (q_next - q_current) / dt
-        self.q.from_numpy(q_next)
-        self.q_dot.from_numpy(q_dot_next)
-        self.project_vertices()
+        q_next = alpha * q_next + (1 - alpha) * q_current
+        q_dot_current = self.q_dot.to_numpy()
+        q_dot_next = q_dot_next * alpha + (1 - alpha) * q_dot_current
+        if update_q:
+            self.q.from_numpy(q_next)
+        if update_q_dot:
+            self.q_dot.from_numpy(q_dot_next)
+        if project:
+            self.project_vertices()
         for c in self.children:
-            c.traverse(q)
+            c.traverse(q, update_q, update_q_dot, project)
 
     def fill_M(self, M):
         i0 = self.id * 12
@@ -285,11 +307,11 @@ def main():
     camera_pos = np.array([0.0, 0.0, 3.0])
     camera_dir = np.array([0.0, 0.0, -1.0])
 
-    root = AffineCube(0, omega=[10., 0., 0.])
+    root = AffineCube(0, omega=[10., 0., 0.], mass = 1e3)
     pos = [0., -1., 1.] if hinge else [-1., -1., -
                                        1.] if not centered else [-0.5, -0.5, -0.5]
     link = None if n_cubes < 2 else AffineCube(
-        1, omega=[-10., 0., 0.], pos=pos, parent=root)
+        1, omega=[-10., 0., 0.], pos=pos, parent=root, mass = 1e3)
 
     C = np.zeros((m, n_dof), np.float32) if link is None else fill_C(
         1, 0, -link.r_lk_hat.to_numpy(), link.r_pkl_hat.to_numpy())
@@ -306,9 +328,13 @@ def main():
     V, V_inv = U(C)
     # V_inv = np.identity(n_dof, np.float32)
     print(np.max(V @ V_inv - np.identity(n_dof, np.float32)))
-
+    
     # copied code ---------------------------------------
     mouse_staled = np.zeros(2, dtype=np.float32)
+    diag_M = np.zeros((n_dof), np.float32)
+    root.fill_M(diag_M)
+    M = np.diag(diag_M)
+    print(diag_M)
     while window.running:
         mouse = np.array([*window.get_cursor_pos(), 0.0])
         if window.is_pressed('a'):
@@ -347,14 +373,14 @@ def main():
         # f[:3] = root.m * gravity
         # f[12: 15] = link.m * gravity
         q, q_dot = root.assemble_q_q_dot()
-        # shape = 1 * 24, transpose before use
         q_tiled = tiled_q(dt, q_dot, q, f)
         for iter in range(max_iters):
+            q, q_dot = root.assemble_q_q_dot()
+            # shape = 1 * 24, transpose before use
+            print(f'iter = {iter}')
             root.grad_Eo_top_down()
             root.hess_Eo_top_down()
-            diag_M = np.zeros((n_dof), np.float32)
-            root.fill_M(diag_M)
-            M = np.diag(diag_M)
+            root.Eo_top_down()
             # gradient for transformed space
             # partial E(Uz)/partial z
 
@@ -374,6 +400,7 @@ def main():
             dq = dz @ V_inv.T
             # print("norm(C dq) = ", np.max(C @ dq.T))
             q += dq
+            root.traverse(q, update_q = True, update_q_dot = False, project = False)
 
         root.traverse(q)
         root.mesh(scene)
