@@ -4,8 +4,8 @@ from arp import Cube, skew
 from scipy.linalg import lu, ldl, solve
 ti.init(ti.x64, default_fp=ti.f32)
 
-n_cubes = 1
-hinge = False
+n_cubes = 2
+hinge = True
 gravity = -np.array([0., -9.8e1, 0.0])
 m = (n_cubes - 1) * 3 if not hinge else (n_cubes - 1) * 6
 n_dof = 12 * n_cubes
@@ -309,7 +309,7 @@ c1 = 1e-4
 def line_search(dq, root, q0, grad0, q_tiled, M):
     wolfe = False
     alpha = 1
-    E0 = globals.Eo[0] * dt ** 2 + 0.5 * (q0 - q_tiled) @ M @ (q0 - q_tiled).T
+    E0 = np.sum(globals.Eo) * dt ** 2 + 0.5 * (q0 - q_tiled) @ M @ (q0 - q_tiled).T
     while not wolfe and np.linalg.norm(grad0) > 1e-3:
         q1 = q0 + dq * alpha
         root.traverse(q1, True, False, False)
@@ -317,11 +317,11 @@ def line_search(dq, root, q0, grad0, q_tiled, M):
         E1 = np.sum(globals.Eo) * dt ** 2 + 0.5 * (q1 - q_tiled) @ M @ (q1 - q_tiled).T
         # print(dq.shape, grad0.shape)
         wolfe = E1 <= E0 + c1 * alpha * (dq @ grad0) 
-        # print(f'dq_norm = {np.linalg.norm(dq)}, grad norm = {np.linalg.norm(grad0)}, dq @ grad = {dq @ grad0}')
-        # print(f'E1 = {E1[0]}, alpha = {alpha}, wolfe rhs = {E0[0] + c1 * alpha * (dq @ grad0)}')
         alpha /= 2
         if alpha < 1e-8:
-            print(alpha, "error")
+            print(f'dq_norm = {np.linalg.norm(dq)}, grad norm = {np.linalg.norm(grad0)}, dq @ grad = {dq @ grad0}')
+            print(f'E1 = {E1[0]}, alpha = {alpha}, wolfe rhs = {E0[0] + c1 * alpha * (dq @ grad0)}')
+            print(f"error, alpha = {alpha}, grad norm = {np.linalg.norm( grad0)}, dq = {np.linalg} ")
             quit() 
     return alpha * 2
 
@@ -362,7 +362,7 @@ def step(root, M, V_inv):
         # hess[0:3, :] = np.zeros((3, n_dof), np.float32)
         # hess[:, 0: 3] = np.zeros((n_dof, 3), np.float32)
 
-        
+
         # dz = -np.linalg.solve(hess[m:, m:], grad[m:])
         # l, d, perm = ldl(hess[m:, m:], lower= 0)
         # print(hess[m:, m:] - hess[m:, m:].T)
