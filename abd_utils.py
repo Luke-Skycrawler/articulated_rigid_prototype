@@ -4,7 +4,7 @@ from arp import Cube, skew
 from scipy.linalg import lu, ldl, solve
 ti.init(ti.x64, default_fp=ti.f64)
 
-n_cubes = 2
+n_cubes = 3
 hinge = True
 gravity = -np.array([0., -9.8e1, 0.0])
 m = (n_cubes - 1) * 3 if not hinge else (n_cubes - 1) * 6
@@ -404,6 +404,9 @@ def main():
     link = None if n_cubes < 2 else AffineCube(
         1, omega=[-10., 0., 0.], pos=pos, parent=root, mass = 1e3)
 
+    link2 = None if n_cubes < 3 else AffineCube(
+        1, omega=[10., 0., 0.], pos=[0. , -2., 2.], parent=link, mass = 1e3)
+
     C = np.zeros((m, n_dof), np.float64) if link is None else fill_C(
         1, 0, -link.r_lk_hat.to_numpy(), link.r_pkl_hat.to_numpy())
     if hinge and link is not None:
@@ -412,6 +415,10 @@ def main():
         C_p1 = fill_C(1, 0, v[6], v[5])
         C_p2 = fill_C(1, 0, v[2], v[1])
         C = np.vstack([C_p1, C_p2])
+        if n_cubes == 3: 
+            C_p1 = fill_C(2, 1, v[6], v[5])
+            C_p2 = fill_C(1, 0, v[2], v[1])
+            C = np.vstack([C, C_p1, C_p2])
         # q, q_dot = root.assemble_q_q_dot()
         # print(C[:, : 12])
         # print(C @ q.T)
