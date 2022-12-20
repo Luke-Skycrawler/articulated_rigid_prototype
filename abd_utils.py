@@ -3,6 +3,7 @@ import numpy as np
 from arp import Cube, skew
 from scipy.linalg import lu, ldl, solve
 import ipctk
+from PSD_projection import project_PSD
 
 ti.init(ti.x64, default_fp=ti.f64)
 
@@ -544,6 +545,54 @@ def traverse(cubes, q, update_q=True, update_q_dot=True, project=True):
             c.project_vertices()
 
 
+def ipc_term(H, g, pts, idx):
+    for pt, ij in zip(pts, idx):
+        p, t0, t1, t2 = pt
+        i, v, j, f = ij
+
+        grad_d2 = ipctk.point_triangle_distance_gradient(p, t0, t1, t2)
+        hess_d2 = ipctk.point_triangle_distance_hessian(p, t0, t1, t2)
+        d = ipctk.point_triangle_distance(p, t0, t1, t2)
+        d = np.sqrt(d)
+        grad = grad_d2 / (2 * d)
+        grad = grad.reshape((12, 1))
+        hess = (hess_d2 / 2 - grad @ grad.T) / d
+        B_ = ipctk.barrier_gradient(d, dhat)
+        B__ = ipctk.barrier_hessian(d, dhat)
+
+        def jacobian(x):
+            I = np.identity(3)
+            return np.hstack([I, I * x[0], I * x[1], I * x[2]])
+
+        Jt = np.vstack([jacobian(t0), jacobian(t1), jacobian(t2)])
+        Jp = jacobian(p)
+
+        grad_t = grad[3:]
+        grad_p = grad[: 3]
+        hess_t = Jt.T @ (B_ * hess[3:, 3:] + B__ * grad_t @ grad_t.T) @ Jt
+        hess_p = Jp.T @ (B_ * hess[:3, : 3] + B__ * grad_p @ grad_p.T) @ Jp
+
+        off_diag = Jp.T @ (B_ * hess[: 3, 3:] + B__ * grad_p @ grad_t.T) @ Jt
+
+        print(hess_t)
+        print(hess_p)
+        print(off_diag)
+        hess_t = project_PSD(hess_t)
+        hess_p = project_PSD(hess_p)
+        off_diag = project_PSD(off_diag)
+        # if trace:
+
+        # FIXME: i should be cubes[i].id
+        H[12 * i: 12 * (i + 1), 12 * i: 12 * (i + 1)] += hess_p
+        H[12 * j: 12 * (j + 1), 12 * j: 12 * (j + 1)] += hess_t
+
+        H[12 * i: 12 * (i + 1), 12 * j: 12 * (j + 1)] += off_diag
+        H[12 * j: 12 * (j + 1), 12 * i: 12 * (i + 1)] += off_diag
+
+        g[i * 12: 12 * (i + 1)] += Jp.T @ grad_p
+        g[j * 12: 12 * (j + 1)] += Jt.T @ grad_t
+
+
 def step_disjoint(cubes, M, V_inv):
     f = np.zeros((n_dof))
     q, q_dot = assemble_q_q_dot(cubes)
@@ -551,19 +600,19 @@ def step_disjoint(cubes, M, V_inv):
     do_iter = True
     iter = 0
     pts, idx = compute_constraint_set(cubes)
-    # print(constraints)
-    # quit()
+    print(f'constraint set size = {len(pts)}')
     while do_iter:
         q, q_dot = assemble_q_q_dot(cubes)
         Eo_differentials(cubes)
         hess = globals.H * dt ** 2 + M
         grad = globals.g.reshape((-1, 1)) * dt ** 2 + M @ (q - q_tiled).T
-
+        ipc_term(hess, grad, pts, idx)
         dq = -solve(hess, grad, assume_a="pos")
         if trace:
             print(f'dq shape = {dq.shape}')
             print(f'hess shape = {hess.shape}')
             print(f'grad shape = {grad.shape}')
+
         t = step_size_upper_bound(dq, cubes, pts, idx)
         dq *= t
         dq = dq.reshape((1 , -1)) 
@@ -652,11 +701,10 @@ def main():
     camera_dir = np.array([0.0, 0.0, -1.0])
 
     _root = AffineCube(0, omega=[10., 0., 0.], mass = 1e3)
-    pos = [0., -1., 1.] if hinge else [-1., -1., -
-                                       1.] if not centered else [-0.5, -0.5, -0.5]
+    pos = [0., -1., 1.] if hinge else [-1., -1., -1.] if not centered else [-0.5, -0.5, -0.5]
 
     if not articulated:
-        pos[2] += dhat
+        pos[2] += dhat * 2
     link = None if n_cubes < 2 else AffineCube(
         1, omega=[-10., 0., 0.], pos=pos, parent=_root, mass = 1e3)
 
