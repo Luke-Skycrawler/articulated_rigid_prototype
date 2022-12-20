@@ -2,9 +2,11 @@ import taichi as ti
 import numpy as np
 from arp import Cube, skew
 from scipy.linalg import lu, ldl, solve
+import ipctk
+
 ti.init(ti.x64, default_fp=ti.f64)
 
-n_cubes = 3
+n_cubes = 2
 hinge = True
 gravity = -np.array([0., -9.8e1, 0.0])
 m = (n_cubes - 1) * 3 if not hinge else (n_cubes - 1) * 6
@@ -22,6 +24,8 @@ a_cols = n_cubes * 4
 a_rows = m // 3
 alpha = 1.0
 trace = False
+articulated = False
+dhat = 1e-2
 a = ti.field(float, shape=(a_rows, a_cols)) if a_rows and a_cols else None
 d = ti.field(float, shape=(a_rows, a_cols)) if a_rows and a_cols else None
 # dual matrix to get the inverse
@@ -207,6 +211,10 @@ class AffineCube(Cube):
         for c in self.children:
             c._reset()
         # self.init_q_q_dot()
+        self.p_t0 = None
+        self.p_t1 = None
+        self.t_t0 = None
+        self.t_t1 = None
 
     @ti.kernel
     def init_q_q_dot(self):
@@ -269,6 +277,17 @@ class AffineCube(Cube):
             A = ti.Matrix.rows([self.q[1], self.q[2], self.q[3]])
             self.v_transformed[i] = A @ self.vertices[i] + self.q[0]
 
+    @ti.kernel
+    def project_vertices_t2(self, dq: ti.types.ndarray()):
+        for i in ti.static(range(8)):
+            dq0 = ti.Vector([dq[0], dq[1], dq[2]])
+            dq1 = ti.Vector([dq[3], dq[4], dq[5]])
+            dq2 = ti.Vector([dq[6], dq[7], dq[8]])
+            dq3 = ti.Vector([dq[9], dq[10], dq[11]])
+
+            A = ti.Matrix.rows([self.q[1] + dq1, self.q[2] + dq2, self.q[3] + dq3])
+            self.v_transformed[i] = A @ self.vertices[i] + (self.q[0] + dq0)
+
     def traverse(self, q, update_q = True, update_q_dot = True, project = True):
         i0 = self.id * 12
         q_next = q[0, i0: i0 + 12].reshape((4, 3))
@@ -304,6 +323,15 @@ class AffineCube(Cube):
             _q_dot = np.hstack([_q_dot, q_dot])
         return _q, _q_dot
 
+    @ti.kernel
+    def gen_triangles(self, t: ti.types.ndarray()):
+        for i, j in ti.ndrange(12, 3):
+            
+            I = self.indices[i * 3 + j]
+            v = self.v_transformed[I]
+            for k in ti.static(range(3)):
+                t[i, j, k] = v[k]
+            
 # @ti.func
 c1 = 1e-4
 def line_search(dq, root, q0, grad0, q_tiled, M):
@@ -312,8 +340,16 @@ def line_search(dq, root, q0, grad0, q_tiled, M):
     E0 = np.sum(globals.Eo) * dt ** 2 + 0.5 * (q0 - q_tiled) @ M @ (q0 - q_tiled).T
     while not wolfe and np.linalg.norm(grad0) > 1e-3:
         q1 = q0 + dq * alpha
-        root.traverse(q1, True, False, False)
-        root.Eo_top_down()
+        if not isinstance(root, list):       
+            root.traverse(q1, True, False, False)
+            root.Eo_top_down()
+        else :
+            traverse(root, q1, True, False, False) 
+            for c in root:
+                E = Eo(c.q)
+                i0 = c.id
+                globals.Eo[i0] = E
+
         E1 = np.sum(globals.Eo) * dt ** 2 + 0.5 * (q1 - q_tiled) @ M @ (q1 - q_tiled).T
         # print(dq.shape, grad0.shape)
         wolfe = E1 <= E0 + c1 * alpha * (dq @ grad0) 
@@ -328,7 +364,222 @@ def line_search(dq, root, q0, grad0, q_tiled, M):
 def tiled_q(dt, q_dot_t, q_t, f_tp1):
     return q_t + dt * q_dot_t + dt ** 2 * f_tp1
 
-def step(root, M, V_inv):
+
+def assemble_q_q_dot(roots):
+    q = np.zeros((1, n_dof))
+    q_dot = np.zeros_like(q)
+    for c in roots:
+        _q = c.q.to_numpy().reshape((1, -1))
+        _q_dot = c.q_dot.to_numpy().reshape((1, -1))
+
+        q[0, c.id * 12: (c.id + 1) * 12] = _q
+        q_dot[0, c.id * 12: (c.id + 1) * 12] = _q_dot
+    return q, q_dot
+
+
+def Eo_differentials(cubes):
+    global globals
+    for c in cubes:
+        grad_Eo(c.q)
+        i0 = c.id * 12
+        gf_np = grad_field.to_numpy().reshape((1, -1))
+        globals.g[i0: i0 + 12] = gf_np
+
+        hess_Eo(c.q)
+        _hf_np = hess_field.to_numpy()
+        hf_np = np.zeros((12, 12), np.float64)
+        for i in range(4):
+            for j in range(4):
+                hf_np[i * 3: i * 3 + 3, j * 3: j * 3 + 3] = _hf_np[i, j]
+        globals.H[i0: i0 + 12, i0: i0 + 12] = hf_np
+
+        E = Eo(c.q)
+        globals.Eo[c.id] = E
+
+
+def step_size_upper_bound(dq, cubes, pts, idx):
+    t = 1.0
+    
+    for pt, ij in zip(pts, idx):
+        p, t0, t1, t2 = pt
+        i, v, j, f  = ij
+        def t2_np(i):
+            
+            i0 = cubes[i].id * 12
+            dq_slice = dq[i0: i0 + 12].reshape((12))
+            cubes[i].project_vertices_t2(dq_slice)
+            return cubes[i].v_transformed.to_numpy()
+
+        p_t1 = t2_np(i)[v]
+
+        t_x = t2_np(j)
+        t_idx = cubes[j].indices.to_numpy()[3 * f: 3 * f + 3]
+        t0_t1 = t_x[t_idx[0]]
+        t1_t1 = t_x[t_idx[1]]
+        t2_t1 = t_x[t_idx[2]]
+
+        _, _t = ipctk.point_triangle_ccd(
+            p, t0, t1, t2, p_t1, t0_t1, t1_t1, t2_t1)
+        t = min(t, _t)
+    return t
+
+
+def compute_constraint_set(cubes):
+    for c in cubes:
+        t_t0 = np.zeros((12, 3, 3))
+        c.project_vertices()
+        c.p_t0 = c.v_transformed.to_numpy()
+        # shape 8x3
+        c.gen_triangles(t_t0)
+
+        t_t1 = np.zeros_like(t_t0)
+        i0 = c.id * 12
+        # dq_slice = dq[i0: i0 + 12]
+        # c.project_vertices_t2(dq_slice)
+        c.p_t1 = c.v_transformed.to_numpy()
+        c.gen_triangles(t_t1)
+
+        c.t_t0 = t_t0
+        c.t_t1 = t_t1
+
+        p = np.array([c.p_t0, c.p_t1])
+        c.lp = np.min(p, axis = 0)
+        c.up = np.max(p, axis = 0)
+
+        l_t0 = np.min(t_t0, axis = 1)
+        u_t0 = np.max(t_t0, axis = 1)
+        l_t1 = np.min(t_t1, axis = 1)
+        u_t1 = np.max(t_t1, axis = 1)
+
+        l = np.array([l_t0, l_t1])
+        u = np.array([u_t0, u_t1])
+
+        c.lt = np.min(l, axis = 0)
+        c.ut = np.max(u, axis = 0)
+
+        # print(c.lt.shape, c.ut.shape)
+        # assert 12x3
+
+    pt_set = []
+    idx_set = []
+    for i, ci in  enumerate(cubes):
+        for j, cj in enumerate(cubes):
+            if i == j :
+                continue 
+            pts, idx = pt_intersect(ci, cj, i, j, dhat)
+            pt_set += pts
+            idx_set += idx
+    return np.array(pts), np.array(idx_set)
+                
+            
+@ti.kernel
+def candidacy(up:ti.types.ndarray(), lp:ti.types.ndarray(), ut:ti.types.ndarray(), lt:ti.types.ndarray(), ret:ti.types.ndarray()):
+    for p, t in ti.ndrange(8, 12):
+        upx = ti.Vector([up[p, 0], up[p, 1], up[p, 2]])
+        lpx = ti.Vector([lp[p, 0], lp[p, 1], lp[p, 2]])
+
+        utx = ti.Vector([ut[t, 0], ut[t, 1], ut[t, 2]])
+        ltx = ti.Vector([lt[t, 0], lt[t, 1], lt[t, 2]])
+        
+        board_phase_candidacy = not ((upx < ltx).all() or (lpx > utx).all())
+
+        ret[p, t] = board_phase_candidacy
+
+
+
+    
+def pt_intersect(ci, cj, _i, _j, dhat = 0.0):
+    '''
+    test body ci's point against body cj's triangles  
+    '''
+    pts = []
+    idx = []
+    # cand = np.zeros((8, 12))
+    # candidacy(ci.up, ci.lp, cj.ut, cj.lt, cand)
+    cand = np.ones((8, 12))
+    for i in range(8):
+        for j in range(12):
+            if cand[i, j]:
+                p = ci.p_t0[i]
+                t0 = cj.t_t0[j, 0]
+                t1 = cj.t_t0[j, 1]
+                t2 = cj.t_t0[j, 2]
+
+                d2 = ipctk.point_triangle_distance(p, t0, t1, t2)
+                d = np.sqrt(d2)
+
+                if d < dhat:
+                    # p_t1 = ci.p_t1[i]
+                    # t0_t1 = cj.t_t1[j, 0]
+                    # t1_t1 = cj.t_t1[j, 1]
+                    # t2_t1 = cj.t_t1[j, 2]
+                    # ret.append([p, t0, t1, t2, p_t1, t0_t1, t1_t1, t2_t1])
+                    pts.append([p, t0, t1, t2 ])
+                    idx.append([_i, i, _j, j])
+    return pts, idx
+                
+def fill_M(cubes, M):
+    for c in cubes:
+        i0 = c.id * 12
+        M[i0: i0 + 3] = c.m
+        M[i0 + 3: i0 + 12] = c.Ic
+
+
+def traverse(cubes, q, update_q=True, update_q_dot=True, project=True):
+    for c in cubes:
+        i0 = c.id * 12
+        q_next = q[0, i0: i0 + 12].reshape((4, 3))
+        q_current = c.q0.to_numpy()
+        q_dot_next = (q_next - q_current) / dt
+        q_dot_current = c.q_dot.to_numpy()
+
+        # q_next = alpha * q_next + (1 - alpha) * q_current
+        # q_dot_next = q_dot_next * alpha + (1 - alpha) * q_dot_current
+        if update_q:
+            c.q.from_numpy(q_next)
+        if update_q_dot:
+            c.q_dot.from_numpy(q_dot_next)
+        if project:
+            c.q0.copy_from(c.q)
+            c.project_vertices()
+
+
+def step_disjoint(cubes, M, V_inv):
+    f = np.zeros((n_dof))
+    q, q_dot = assemble_q_q_dot(cubes)
+    q_tiled = tiled_q(dt, q_dot, q, f)
+    do_iter = True
+    iter = 0
+    pts, idx = compute_constraint_set(cubes)
+    # print(constraints)
+    # quit()
+    while do_iter:
+        q, q_dot = assemble_q_q_dot(cubes)
+        Eo_differentials(cubes)
+        hess = globals.H * dt ** 2 + M
+        grad = globals.g.reshape((-1, 1)) * dt ** 2 + M @ (q - q_tiled).T
+
+        dq = -solve(hess, grad, assume_a="pos")
+        if trace:
+            print(f'dq shape = {dq.shape}')
+            print(f'hess shape = {hess.shape}')
+            print(f'grad shape = {grad.shape}')
+        t = step_size_upper_bound(dq, cubes, pts, idx)
+        dq *= t
+        dq = dq.reshape((1 , -1)) 
+        alpha = line_search(dq, cubes, q, grad, q_tiled, M)
+        # FIXME: line search arguments, fixed
+        q += dq * alpha
+        traverse(cubes, q, update_q=True, update_q_dot=False, project=False)
+
+        do_iter = np.linalg.norm(dq * alpha) > 1e-4
+        iter += 1
+        if not do_iter:
+            print(f'converge after {iter} iters')
+    traverse(cubes, q)
+
+
+def step_link(root, M, V_inv):
     f = np.zeros((n_dof))
     # f[:3] = root.m * gravity
     # f[12: 15] = link.m * gravity
@@ -386,6 +637,8 @@ def step(root, M, V_inv):
             
     root.traverse(q)
 
+
+step = step_link if articulated else step_disjoint
 def main():
     formatter = '{:.2e}'.format
     np.set_printoptions(formatter={'float_kind': formatter})
@@ -398,17 +651,22 @@ def main():
     camera_pos = np.array([0.0, 0.0, 3.0])
     camera_dir = np.array([0.0, 0.0, -1.0])
 
-    root = AffineCube(0, omega=[10., 0., 0.], mass = 1e3)
+    _root = AffineCube(0, omega=[10., 0., 0.], mass = 1e3)
     pos = [0., -1., 1.] if hinge else [-1., -1., -
                                        1.] if not centered else [-0.5, -0.5, -0.5]
+
+    if not articulated:
+        pos[2] += dhat
     link = None if n_cubes < 2 else AffineCube(
-        1, omega=[-10., 0., 0.], pos=pos, parent=root, mass = 1e3)
+        1, omega=[-10., 0., 0.], pos=pos, parent=_root, mass = 1e3)
 
     link2 = None if n_cubes < 3 else AffineCube(
         1, omega=[10., 0., 0.], pos=[0. , -2., 2.], parent=link, mass = 1e3)
 
     C = np.zeros((m, n_dof), np.float64) if link is None else fill_C(
         1, 0, -link.r_lk_hat.to_numpy(), link.r_pkl_hat.to_numpy())
+    
+    root = _root if articulated else [_root, link]
     if hinge and link is not None:
         v = link.vertices.to_numpy()
         # print("7, 6, 1, 0", v[7], v[6], v[1], v[0])
@@ -430,7 +688,10 @@ def main():
     # copied code ---------------------------------------
     mouse_staled = np.zeros(2, dtype=np.float64)
     diag_M = np.zeros((n_dof), np.float64)
-    root.fill_M(diag_M)
+    if isinstance(root, list):
+        fill_M(root, diag_M)
+    else :
+        root.fill_M(diag_M)
     M = np.diag(diag_M)
     print(diag_M)
     while window.running:
@@ -468,8 +729,14 @@ def main():
         scene.ambient_light((0.5, 0.5, 0.5))
         # copied code ---------------------------------------
         step(root, M, V_inv)
-        root.mesh(scene)
-        root.particles(scene)
+        if isinstance(root, list):
+            for c  in root:
+                c.mesh(scene)
+            for c in root:
+                c.particles(scene)
+        else :
+            root.mesh(scene)
+            root.particles(scene)
         canvas.scene(scene)
         window.show()
 
