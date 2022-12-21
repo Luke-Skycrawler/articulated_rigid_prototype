@@ -343,12 +343,15 @@ def line_search(dq, root, q0, grad0, q_tiled, M, idx = None, pts = None, cubes =
             for pt in pts:
                 e += v_barrier(pt)
         # print(f'ipc energy at {"line search start" if dq is None else "iter"}, e = {e}')
-        return np.sum(globals.Eo) * dt ** 2 + 0.5 * (q0 - q_tiled) @ M @ (q0 - q_tiled).T + e * kappa_ipc
+        return np.sum(globals.Eo) * dt ** 2 + 0.5 * ((q0 - q_tiled) @ M @ (q0 - q_tiled).T)[0, 0] + e * kappa_ipc
         
     wolfe = False
     alpha = 1
     E0 = Vb(q0, q_tiled, M, cubes, idx, pts = pts)
-    while not wolfe and np.linalg.norm(grad0) > 1e-3:
+    dq_norm_inf = np.max(np.abs(dq))
+    dq_norm_2 = np.linalg.norm(dq)
+    grad_norm_2 = np.linalg.norm(grad0)
+    while not wolfe and grad_norm_2 > 1e-3:
         q1 = q0 + dq * alpha
         if not isinstance(root, list):       
             root.traverse(q1, True, False, False)
@@ -362,15 +365,16 @@ def line_search(dq, root, q0, grad0, q_tiled, M, idx = None, pts = None, cubes =
 
         E1 = Vb(q1, q_tiled, M, cubes, idx, dq = dq * alpha)
         # print(dq.shape, grad0.shape)
-        wolfe = E1 <= E0 + c1 * alpha * (dq @ grad0) 
+        wolfe = E1 <= E0 + c1 * alpha * (dq @ grad0)[0, 0]
         alpha /= 2
-        assert alpha >= 1e-8, f'''dq_norm = {np.linalg.norm(dq)}, grad norm = {np.linalg.norm(grad0)}, dq @ grad = {dq @ grad0}
-            E1 = {E1[0, 0]}, alpha = {alpha:.2e}, wolfe rhs = {E0[0, 0] + c1 * alpha * (dq @ grad0)}
-            E0 - E1 = {E1 - E0}, requested descend = {c1 * alpha * (dq @ grad0)}'''
+        assert alpha * dq_norm_inf >= 1e-10, f'''dq_norm_2 = {dq_norm_2}, grad norm = {grad_norm_2}, dq @ grad = {dq @ grad0}
+            E1 = {E1:.2e}, alpha = {alpha:.2e}, wolfe rhs = {E0 + c1 * alpha * (dq @ grad0)}
+            E0 - E1 = {E0 - E1:.2e}, requested descend = {c1 * alpha * (dq @ grad0)}
+            wolfe = {wolfe}'''
         if alpha < 1e-8:
             break
         if wolfe:
-            print(f"line search: descend = {E1 - E0}, E0 = {E0[0, 0]:.2e}, E1 = {E1[0,0]: .2e}")
+            print(f"line search: descend = {E1 - E0}, E0 = {E0:.2e}, E1 = {E1: .2e}")
     return alpha * 2
 
 def tiled_q(dt, q_dot_t, q_t, f_tp1):
@@ -450,7 +454,6 @@ def step_size_upper_bound(dq, cubes, pts, idx):
                 |                                                                                            |
                 |--------------------------------------------------------------------------------------------|
                 ''')
-            quit()
         t = min(t, _t)
     print(f'step size upper bound = {t}')
     return t
@@ -591,7 +594,7 @@ def ipc_term(H, g, pts, idx, cubes):
         grad = grad_d2 / (2 * d)
         grad = grad.reshape((12, 1))
         hess = (hess_d2 / 2 - grad @ grad.T) / d
-        # assert (hess == hess.T).all(), 'laplacian d not symetric'
+        assert (np.abs(hess - hess.T) < 1e-5).all(), 'laplacian d not symetric'
         B_ = ipctk.barrier_gradient(d, dhat) * kappa_ipc
         B__ = ipctk.barrier_hessian(d, dhat) * kappa_ipc
         # print(B_, B__)
@@ -617,7 +620,7 @@ def ipc_term(H, g, pts, idx, cubes):
 
         hess_t = project_PSD(hess_t)
         hess_p = project_PSD(hess_p)
-        off_diag = project_PSD(off_diag)
+        # off_diag = project_PSD(off_diag)
 
         # FIXME: i should be cubes[i].id
         i, j = cubes[_i].id, cubes[_j].id
@@ -761,11 +764,12 @@ def main():
 
     _root = AffineCube(0, omega=[10., 0., 0.], mass = 1e3)
     pos = [0., -1., 1.] if hinge else [-1., -1., -1.] if not centered else [-0.5, -0.5, -0.5]
-    pos2 = [1.3, 0.3, 0.3] if not articulated else [0., -2., 2.]
-    vc2 = [-20.0, 0.0, 0.0]
+    pos2 = [1.1, 0.3, 0.3] if not articulated else [0., -2., 2.]
+    vc2 = [-2.0, 0.0, 0.0]
 
     if not articulated:
         pos[2] += dhat * 0.9
+        pos = [0.0, 100.0, 0.0]
     link = None if n_cubes < 2 else AffineCube(
         1, omega=[-10., 0., 0.], pos=pos, parent=_root, mass = 1e3)
 
@@ -823,7 +827,11 @@ def main():
         if window.is_pressed('s'):
             camera_pos -= delta * camera_dir
         if window.is_pressed('r'):
-            root._reset()
+            if articulated: 
+                root._reset()
+            else: 
+                for c in root:
+                    c._reset()
         if window.is_pressed('p'):
             pause = not pause
         
@@ -862,6 +870,11 @@ def main():
         elif not local and ts % 10 == 0:
             window.save_image(f'{ts // 10}.png')
         ts += 1
+        print(f'timestep = {ts}')
+        if ts >= 43:
+            q_ = link2.q_dot.to_numpy()
+            n_q = np.max(np.abs(q_))
+            print(f'q_dot={q_}, \n\nnorm = {n_q}')
 
 
 if __name__ == "__main__":
