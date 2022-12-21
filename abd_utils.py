@@ -7,7 +7,7 @@ from PSD_projection import project_PSD
 from scipy.linalg.lapack import dsysv
 ti.init(ti.x64, default_fp=ti.f64)
 
-n_cubes = 2
+n_cubes = 3
 hinge = True
 gravity = -np.array([0., -9.8e1, 0.0])
 m = (n_cubes - 1) * 3 if not hinge else (n_cubes - 1) * 6
@@ -148,22 +148,6 @@ def U(C):
     return V, _V_inv
 
 
-# @ti.kernel
-# def tiled_C(C: ti.types.ndarray(), m: int, n: int):
-#     '''
-#     gaussian elimination
-#     row pivot
-#     C_m*n: linear constraint
-#     return: U_n*n
-#     '''
-#     for i in range(m):
-
-#         max_front()
-#         for j in range(i + 1, m):
-#             range
-
-#     pass
-
 class Global:
     def __init__(self):
         self.g = np.zeros((n_dof), np.float64)
@@ -193,9 +177,11 @@ def hess_Eo(q: ti.template()):
     for i, j in ti.ndrange((1, 4), (1, 4)):
         h = (q[j].dot(q[i]) - kronecker(i, j)) * ti.Matrix.identity(float, 3)
         for k in range(1, 4):
-            h += (q[i] * kronecker(k, j) + q[k] * kronecker(i, j)) @ q[k].transpose()
-            
+            h += (q[i] * kronecker(k, j) + q[k] *
+                  kronecker(i, j)) @ q[k].transpose()
+
         hess_field[i, j] = 4 * kappa * h
+
 
 @ti.kernel
 def Eo(q: ti.template()) -> float:
@@ -205,8 +191,8 @@ def Eo(q: ti.template()) -> float:
 
 @ti.data_oriented
 class AffineCube(Cube):
-    def __init__(self, id, scale=[1.0, 1.0, 1.0], omega=[0., 0., 0.], pos=[0., 0., 0.], parent=None, Newton_Euler=False, mass = 1.0):
-        super().__init__(id, scale=scale, omega=omega, pos=pos,
+    def __init__(self, id, scale=[1.0, 1.0, 1.0], omega=[0., 0., 0.], pos=[0., 0., 0.], vc=[0.0, 0.0, 0.0], parent=None, Newton_Euler=False, mass=1.0):
+        super().__init__(id, scale=scale, omega=omega, pos=pos, vc=vc,
                          parent=parent, Newton_Euler=Newton_Euler, mass= mass)
         self.q = ti.Vector.field(3, float, shape=(4))
         self.q_dot = ti.Vector.field(3, float, shape=(4))
@@ -228,6 +214,7 @@ class AffineCube(Cube):
         for i, j in ti.static(ti.ndrange(3, 3)):
             self.q_dot[i + 1][j] = R[i, j]
             self.q[i + 1][j] = I[i, j]
+        self.q_dot[0] = self.v[None]
 
     def _reset(self):
         self.p[None] = ti.Vector(self.initial_state[0])
@@ -378,7 +365,8 @@ def line_search(dq, root, q0, grad0, q_tiled, M, idx = None, pts = None, cubes =
         wolfe = E1 <= E0 + c1 * alpha * (dq @ grad0) 
         alpha /= 2
         assert alpha >= 1e-8, f'''dq_norm = {np.linalg.norm(dq)}, grad norm = {np.linalg.norm(grad0)}, dq @ grad = {dq @ grad0}
-            E1 = {E1[0]}, alpha = {alpha}, wolfe rhs = {E0[0] + c1 * alpha * (dq @ grad0)}'''
+            E1 = {E1[0, 0]}, alpha = {alpha:.2e}, wolfe rhs = {E0[0, 0] + c1 * alpha * (dq @ grad0)}
+            E0 - E1 = {E1 - E0}, requested descend = {c1 * alpha * (dq @ grad0)}'''
     return alpha * 2
 
 def tiled_q(dt, q_dot_t, q_t, f_tp1):
@@ -592,7 +580,7 @@ def ipc_term(H, g, pts, idx, cubes):
         grad = grad_d2 / (2 * d)
         grad = grad.reshape((12, 1))
         hess = (hess_d2 / 2 - grad @ grad.T) / d
-        assert (hess == hess.T).all(), 'laplacian d not symetric'
+        # assert (hess == hess.T).all(), 'laplacian d not symetric'
         B_ = ipctk.barrier_gradient(d, dhat) * kappa_ipc
         B__ = ipctk.barrier_hessian(d, dhat) * kappa_ipc
         # print(B_, B__)
@@ -614,12 +602,11 @@ def ipc_term(H, g, pts, idx, cubes):
         # print(hess_p)
         # print(off_diag)
 
-        assert (hess == hess.T).all()
         # assert (hess_p == hess_p.T).all()
 
-        # hess_t = project_PSD(hess_t)
-        # hess_p = project_PSD(hess_p)
-        # off_diag = project_PSD(off_diag)
+        hess_t = project_PSD(hess_t)
+        hess_p = project_PSD(hess_p)
+        off_diag = project_PSD(off_diag)
         # if trace:
 
         # FIXME: i should be cubes[i].id
@@ -642,7 +629,7 @@ def ipc_term(H, g, pts, idx, cubes):
         g[j * 12: 12 * (j + 1)] += Jt.T @ grad_t  * B_
 
     # print(f'after adding ipc term, norm = {np.linalg.norm(H)}')
-    assert (np.abs(H - H.T) < 1e-5).all(), "output hessian not symetric"
+    # assert (np.abs(H - H.T) < 1e-5).all(), "output hessian not symetric"
 
 def step_disjoint(cubes, M, V_inv):
     f = np.zeros((n_dof))
@@ -759,6 +746,8 @@ def main():
 
     _root = AffineCube(0, omega=[10., 0., 0.], mass = 1e3)
     pos = [0., -1., 1.] if hinge else [-1., -1., -1.] if not centered else [-0.5, -0.5, -0.5]
+    pos2 = [1.3, 0.3, 0.3] if not articulated else [0., -2., 2.]
+    vc2 = [-20.0, 0.0, 0.0]
 
     if not articulated:
         pos[2] += dhat * 0.9
@@ -766,12 +755,14 @@ def main():
         1, omega=[-10., 0., 0.], pos=pos, parent=_root, mass = 1e3)
 
     link2 = None if n_cubes < 3 else AffineCube(
-        1, omega=[10., 0., 0.], pos=[0. , -2., 2.], parent=link, mass = 1e3)
+        2, omega=[0., 0., 10.], pos=pos2, vc=vc2, parent=link, mass=1e3)
 
     C = np.zeros((m, n_dof), np.float64) if link is None else fill_C(
         1, 0, -link.r_lk_hat.to_numpy(), link.r_pkl_hat.to_numpy())
     
     root = _root if articulated else [_root, link]
+    if link2 is not None and not articulated:
+        root.append(link2)
     if hinge and link is not None:
         v = link.vertices.to_numpy()
         # print("7, 6, 1, 0", v[7], v[6], v[1], v[0])
@@ -786,7 +777,7 @@ def main():
         # print(C[:, : 12])
         # print(C @ q.T)
 
-    V, V_inv = U(C)
+    V, V_inv = U(C) if articulated else None, None
     # V_inv = np.identity(n_dof, np.float64)
 
     # print(np.max(V @ V_inv - np.identity(n_dof, np.float64)))

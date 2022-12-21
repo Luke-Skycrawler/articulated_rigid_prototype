@@ -300,7 +300,7 @@ def load_3x3(A):
 
 @ti.data_oriented
 class Cube:
-    def __init__(self, id, scale=[1.0, 1.0, 1.0], omega=[0., 0., 0.], pos=[0., 0., 0.], parent=None, Newton_Euler=False, mass = 1.0):
+    def __init__(self, id, scale=[1.0, 1.0, 1.0], omega=[0., 0., 0.], pos=[0., 0., 0.], vc = [0.0, 0.0, 0.0], parent=None, Newton_Euler=False, mass = 1.0):
 
         # generalized coordinates
         self.p = ti.Vector.field(3, float, shape=())
@@ -319,7 +319,7 @@ class Cube:
         # self.J_dot = ti.Matrix.field(6, 6, float, shape = ())
         self.omega = ti.Vector.field(3, float, shape=())
 
-        self.initial_state = [pos, omega]
+        self.initial_state = [pos, omega, vc]
         # constants
         self.scale = scale
         self.m = mass
@@ -352,7 +352,6 @@ class Cube:
 
     @ti.kernel
     def initialize(self):
-        self.v[None] = ti.Vector.zero(float, 3)
         self.R[None] = ti.Matrix.identity(float, 3)
 
         self.R0[None] = ti.Matrix.identity(float, 3)
@@ -720,6 +719,7 @@ class Cube:
     def reset(self):
         self.p[None] = ti.Vector(self.initial_state[0])
         self.omega[None] = ti.Vector(self.initial_state[1])
+        self.v[None] = ti.Vector(self.initial_state[2])
         self.initialize()
         for c in self.children:
             c.reset()
