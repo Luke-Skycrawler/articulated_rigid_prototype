@@ -367,6 +367,10 @@ def line_search(dq, root, q0, grad0, q_tiled, M, idx = None, pts = None, cubes =
         assert alpha >= 1e-8, f'''dq_norm = {np.linalg.norm(dq)}, grad norm = {np.linalg.norm(grad0)}, dq @ grad = {dq @ grad0}
             E1 = {E1[0, 0]}, alpha = {alpha:.2e}, wolfe rhs = {E0[0, 0] + c1 * alpha * (dq @ grad0)}
             E0 - E1 = {E1 - E0}, requested descend = {c1 * alpha * (dq @ grad0)}'''
+        if alpha < 1e-8:
+            break
+        if wolfe:
+            print(f"line search: descend = {E1 - E0}, E0 = {E0[0, 0]:.2e}, E1 = {E1[0,0]: .2e}")
     return alpha * 2
 
 def tiled_q(dt, q_dot_t, q_t, f_tp1):
@@ -439,7 +443,14 @@ def step_size_upper_bound(dq, cubes, pts, idx):
         _, _t = ipctk.point_triangle_ccd(
             *pt, *pt_t1)
         if _t < 1.0 :
-            print(f'collision detected, toi, points = {_t}, {pt}, {pt_t1}')
+            print(f'''
+                |--------------------------------------------------------------------------------------------|
+                |                                                                                            |
+                |                  collision detected, toi, points = {_t}, {pt}, {pt_t1}                     |
+                |                                                                                            |
+                |--------------------------------------------------------------------------------------------|
+                ''')
+            quit()
         t = min(t, _t)
     print(f'step size upper bound = {t}')
     return t
@@ -568,7 +579,7 @@ def traverse(cubes, q, update_q=True, update_q_dot=True, project=True):
 
 def ipc_term(H, g, pts, idx, cubes):
     assert (H == H.T).all(), f'input hessian not symetric'
-    # print(f'before adding ipc term, norm = {np.linalg.norm(H)}')
+    print(f'before adding ipc term, norm = {np.linalg.norm(H)}')
     for pt, ij in zip(pts, idx):
         p, t0, t1, t2 = pt
         _i, v, _j, f = ij
@@ -607,7 +618,6 @@ def ipc_term(H, g, pts, idx, cubes):
         hess_t = project_PSD(hess_t)
         hess_p = project_PSD(hess_p)
         off_diag = project_PSD(off_diag)
-        # if trace:
 
         # FIXME: i should be cubes[i].id
         i, j = cubes[_i].id, cubes[_j].id
@@ -628,7 +638,7 @@ def ipc_term(H, g, pts, idx, cubes):
         g[i * 12: 12 * (i + 1)] += Jp.T @ grad_p  * B_
         g[j * 12: 12 * (j + 1)] += Jt.T @ grad_t  * B_
 
-    # print(f'after adding ipc term, norm = {np.linalg.norm(H)}')
+    print(f'after adding ipc term, norm = {np.linalg.norm(H)}')
     # assert (np.abs(H - H.T) < 1e-5).all(), "output hessian not symetric"
 
 def step_disjoint(cubes, M, V_inv):
@@ -661,14 +671,19 @@ def step_disjoint(cubes, M, V_inv):
         t = step_size_upper_bound(dq, cubes, pts, idx)
         dq *= t
         alpha = line_search(dq, cubes, q, grad, q_tiled, M, idx, pts, cubes)
+        print(f'line search: alpha = {alpha}')
         # FIXME: line search arguments, fixed
         q += dq * alpha
         traverse(cubes, q, update_q=True, update_q_dot=False, project=False)
 
+        pt_dq(np.zeros_like(dq), cubes)
+        for i, ij in enumerate(idx):
+            pts[i] = pt_t1_array(cubes, ij)
+
         do_iter = np.linalg.norm(dq * alpha) > 1e-4 and iter < max_iters
         iter += 1
-        if not do_iter:
-            print(f'converge after {iter} iters')
+
+    print(f'\nconverge after {iter} iters\n')
     traverse(cubes, q)
 
 
@@ -792,6 +807,7 @@ def main():
     M = np.diag(diag_M)
     # print(diag_M)
     ts = 0
+    pause = False
     while window.running:
         mouse = np.array([*window.get_cursor_pos(), 0.0])
         if window.is_pressed('a'):
@@ -803,11 +819,14 @@ def main():
         if window.is_pressed('e'):
             camera_pos[1] += delta
         if window.is_pressed('w'):
-            camera_pos[2] -= delta
+            camera_pos += delta * camera_dir
         if window.is_pressed('s'):
-            camera_pos[2] += delta
+            camera_pos -= delta * camera_dir
         if window.is_pressed('r'):
             root._reset()
+        if window.is_pressed('p'):
+            pause = not pause
+        
         if window.is_pressed(ti.GUI.ESCAPE):
             quit()
         if window.is_pressed(ti.GUI.LMB):
@@ -826,7 +845,8 @@ def main():
         scene.point_light(pos=(0, 1, 2), color=(1, 1, 1))
         scene.ambient_light((0.5, 0.5, 0.5))
         # copied code ---------------------------------------
-        step(root, M, V_inv)
+        if not pause:
+            step(root, M, V_inv)
         if isinstance(root, list):
             for c  in root:
                 c.mesh(scene)
