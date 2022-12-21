@@ -15,6 +15,7 @@ n_dof = 12 * n_cubes
 delta = 0.08
 centered = False
 kappa = 1e7
+kappa_ipc = 1e9
 max_iters = 10
 dim_grad = 4
 grad_field = ti.Vector.field(3, float, shape=(dim_grad))
@@ -118,11 +119,11 @@ def U(C):
     identity already up front
     '''
     V = np.zeros((n, n), np.float64)
-    if hinge:
+    if hinge and articulated:
         C[3:6, :] -= C[:3, :]
         C[3:6, :] *= -1.
         # no need to reorder for this selected hinge
-        print(C[:, : 12])
+        print(f'C[:, :12] = {C[:, : 12]} ')
     V[:m, :] = C
     V[m:, m:] = np.identity(n-m, np.float64)
 
@@ -131,8 +132,8 @@ def U(C):
         d.fill(0.0)
         a.fill(0.0)
         gaussian_elimination_row_pivot(C, _V_inv)
-        print(a.to_numpy())
-        print(d.to_numpy())
+        print(f'a = {a.to_numpy()}')
+        print(f'd = {d.to_numpy()}')
     _V_inv[m:, m:] = np.identity(n - m, np.float64)
 
     # V_inv = -V
@@ -397,66 +398,81 @@ def Eo_differentials(cubes):
         E = Eo(c.q)
         globals.Eo[c.id] = E
 
-
+    
 def step_size_upper_bound(dq, cubes, pts, idx):
     t = 1.0
-    
+    for c in cubes:
+        i0 = c.id * 12
+        dq_slice = dq[i0: i0 + 12].reshape((12))
+        # c.project_vertices_t2(dq_slice)
+        c.p_t1 = c.v_transformed.to_numpy()
+        c.t_t1 = np.zeros((12, 3 ,3))
+        c.gen_triangles(c.t_t1)
+    # _indices = cubes[0].indices.to_numpy()
+
     for pt, ij in zip(pts, idx):
         p, t0, t1, t2 = pt
+        # p_t1, t0_t1, t1_t1, t2_t1 = pt
         i, v, j, f  = ij
-        def t2_np(i):
-            
-            i0 = cubes[i].id * 12
-            dq_slice = dq[i0: i0 + 12].reshape((12))
-            cubes[i].project_vertices_t2(dq_slice)
-            return cubes[i].v_transformed.to_numpy()
 
-        p_t1 = t2_np(i)[v]
+        p_t1 = cubes[i].p_t0[v]
 
-        t_x = t2_np(j)
-        t_idx = cubes[j].indices.to_numpy()[3 * f: 3 * f + 3]
-        t0_t1 = t_x[t_idx[0]]
-        t1_t1 = t_x[t_idx[1]]
-        t2_t1 = t_x[t_idx[2]]
+        # t_x = cubes[j].p_t1
+        # t_idx = _indices[3 * f: 3 * f + 3]
 
+        # t0_t1 = t_x[t_idx[0]]
+        # t1_t1 = t_x[t_idx[1]]
+        # t2_t1 = t_x[t_idx[2]]
+
+        t0_t1 = cubes[j].t_t0[f, 0]
+        t1_t1 = cubes[j].t_t0[f, 1]
+        t2_t1 = cubes[j].t_t0[f, 2]
+        
+        pt_t1 = np.array([p_t1, t0_t1, t1_t1, t2_t1])
+        print(f'norm dpt = {np.max(np.abs(pt_t1 - pt))}')
+        assert (pt_t1 - pt < 1e-2).all()
+        _t = 1.0
         _, _t = ipctk.point_triangle_ccd(
             p, t0, t1, t2, p_t1, t0_t1, t1_t1, t2_t1)
+        if _t < 1.0 :
+            print(f'collision detected, toi, points = {_t}, {pt}, {pt_t1}')
         t = min(t, _t)
+    print(f'step size upper bound = {t}')
     return t
 
 
 def compute_constraint_set(cubes):
     for c in cubes:
-        t_t0 = np.zeros((12, 3, 3))
+        c.t_t0 = np.zeros((12, 3, 3))
         c.project_vertices()
         c.p_t0 = c.v_transformed.to_numpy()
         # shape 8x3
-        c.gen_triangles(t_t0)
+        c.gen_triangles(c.t_t0)
 
-        t_t1 = np.zeros_like(t_t0)
-        i0 = c.id * 12
-        # dq_slice = dq[i0: i0 + 12]
-        # c.project_vertices_t2(dq_slice)
-        c.p_t1 = c.v_transformed.to_numpy()
-        c.gen_triangles(t_t1)
+        # t_t1 = np.zeros_like(t_t0)
+        # i0 = c.id * 12
+        # # dq_slice = dq[i0: i0 + 12]
+        # # c.project_vertices_t2(dq_slice)
+        # c.p_t1 = c.v_transformed.to_numpy()
+        # c.gen_triangles(t_t1)
 
-        c.t_t0 = t_t0
-        c.t_t1 = t_t1
+        # c.t_t0 = t_t0
+        # c.t_t1 = t_t1
 
-        p = np.array([c.p_t0, c.p_t1])
-        c.lp = np.min(p, axis = 0)
-        c.up = np.max(p, axis = 0)
+        # p = np.array([c.p_t0, c.p_t1])
+        # c.lp = np.min(p, axis = 0)
+        # c.up = np.max(p, axis = 0)
 
-        l_t0 = np.min(t_t0, axis = 1)
-        u_t0 = np.max(t_t0, axis = 1)
-        l_t1 = np.min(t_t1, axis = 1)
-        u_t1 = np.max(t_t1, axis = 1)
+        # l_t0 = np.min(t_t0, axis = 1)
+        # u_t0 = np.max(t_t0, axis = 1)
+        # l_t1 = np.min(t_t1, axis = 1)
+        # u_t1 = np.max(t_t1, axis = 1)
 
-        l = np.array([l_t0, l_t1])
-        u = np.array([u_t0, u_t1])
+        # l = np.array([l_t0, l_t1])
+        # u = np.array([u_t0, u_t1])
 
-        c.lt = np.min(l, axis = 0)
-        c.ut = np.max(u, axis = 0)
+        # c.lt = np.min(l, axis = 0)
+        # c.ut = np.max(u, axis = 0)
 
         # print(c.lt.shape, c.ut.shape)
         # assert 12x3
@@ -470,7 +486,8 @@ def compute_constraint_set(cubes):
             pts, idx = pt_intersect(ci, cj, i, j, dhat)
             pt_set += pts
             idx_set += idx
-    return np.array(pts), np.array(idx_set)
+
+    return np.array(pt_set), np.array(idx_set)
                 
             
 @ti.kernel
@@ -489,7 +506,7 @@ def candidacy(up:ti.types.ndarray(), lp:ti.types.ndarray(), ut:ti.types.ndarray(
 
 
     
-def pt_intersect(ci, cj, _i, _j, dhat = 0.0):
+def pt_intersect(ci, cj, I, J, dhat = 0.0):
     '''
     test body ci's point against body cj's triangles  
     '''
@@ -516,7 +533,7 @@ def pt_intersect(ci, cj, _i, _j, dhat = 0.0):
                     # t2_t1 = cj.t_t1[j, 2]
                     # ret.append([p, t0, t1, t2, p_t1, t0_t1, t1_t1, t2_t1])
                     pts.append([p, t0, t1, t2 ])
-                    idx.append([_i, i, _j, j])
+                    idx.append([I, i, J, j])
     return pts, idx
                 
 def fill_M(cubes, M):
@@ -546,6 +563,9 @@ def traverse(cubes, q, update_q=True, update_q_dot=True, project=True):
 
 
 def ipc_term(H, g, pts, idx):
+
+    assert (H == H.T).all()
+
     for pt, ij in zip(pts, idx):
         p, t0, t1, t2 = pt
         i, v, j, f = ij
@@ -554,11 +574,13 @@ def ipc_term(H, g, pts, idx):
         hess_d2 = ipctk.point_triangle_distance_hessian(p, t0, t1, t2)
         d = ipctk.point_triangle_distance(p, t0, t1, t2)
         d = np.sqrt(d)
+        assert np.abs(d - dhat * 0.5) < 1e-6
         grad = grad_d2 / (2 * d)
         grad = grad.reshape((12, 1))
         hess = (hess_d2 / 2 - grad @ grad.T) / d
-        B_ = ipctk.barrier_gradient(d, dhat)
-        B__ = ipctk.barrier_hessian(d, dhat)
+        assert (hess == hess.T).all()
+        B_ = ipctk.barrier_gradient(d, dhat) * kappa_ipc
+        B__ = ipctk.barrier_hessian(d, dhat) * kappa_ipc
 
         def jacobian(x):
             I = np.identity(3)
@@ -574,24 +596,26 @@ def ipc_term(H, g, pts, idx):
 
         off_diag = Jp.T @ (B_ * hess[: 3, 3:] + B__ * grad_p @ grad_t.T) @ Jt
 
-        print(hess_t)
-        print(hess_p)
-        print(off_diag)
+        # print(hess_t)
+        # print(hess_p)
+        # print(off_diag)
         hess_t = project_PSD(hess_t)
         hess_p = project_PSD(hess_p)
         off_diag = project_PSD(off_diag)
         # if trace:
 
         # FIXME: i should be cubes[i].id
+        assert (hess_t == hess_t).all()
+        assert (hess_p == hess_p).all()
         H[12 * i: 12 * (i + 1), 12 * i: 12 * (i + 1)] += hess_p
         H[12 * j: 12 * (j + 1), 12 * j: 12 * (j + 1)] += hess_t
 
         H[12 * i: 12 * (i + 1), 12 * j: 12 * (j + 1)] += off_diag
-        H[12 * j: 12 * (j + 1), 12 * i: 12 * (i + 1)] += off_diag
+        H[12 * j: 12 * (j + 1), 12 * i: 12 * (i + 1)] += off_diag.T
 
         g[i * 12: 12 * (i + 1)] += Jp.T @ grad_p
         g[j * 12: 12 * (j + 1)] += Jt.T @ grad_t
-
+    assert (np.abs(H - H.T) < 1e-6).all()
 
 def step_disjoint(cubes, M, V_inv):
     f = np.zeros((n_dof))
@@ -606,13 +630,16 @@ def step_disjoint(cubes, M, V_inv):
         Eo_differentials(cubes)
         hess = globals.H * dt ** 2 + M
         grad = globals.g.reshape((-1, 1)) * dt ** 2 + M @ (q - q_tiled).T
-        ipc_term(hess, grad, pts, idx)
+        # ipc_term(hess, grad, pts, idx)
         dq = -solve(hess, grad, assume_a="pos")
         if trace:
             print(f'dq shape = {dq.shape}')
             print(f'hess shape = {hess.shape}')
             print(f'grad shape = {grad.shape}')
-
+        
+        print("norm(dq) = ", np.max(np.abs(dq)))
+        
+        
         t = step_size_upper_bound(dq, cubes, pts, idx)
         dq *= t
         dq = dq.reshape((1 , -1)) 
@@ -704,7 +731,7 @@ def main():
     pos = [0., -1., 1.] if hinge else [-1., -1., -1.] if not centered else [-0.5, -0.5, -0.5]
 
     if not articulated:
-        pos[2] += dhat * 2
+        pos[2] += dhat * 0.5
     link = None if n_cubes < 2 else AffineCube(
         1, omega=[-10., 0., 0.], pos=pos, parent=_root, mass = 1e3)
 
@@ -731,7 +758,8 @@ def main():
 
     V, V_inv = U(C)
     # V_inv = np.identity(n_dof, np.float64)
-    print(np.max(V @ V_inv - np.identity(n_dof, np.float64)))
+
+    # print(np.max(V @ V_inv - np.identity(n_dof, np.float64)))
     
     # copied code ---------------------------------------
     mouse_staled = np.zeros(2, dtype=np.float64)
@@ -741,7 +769,7 @@ def main():
     else :
         root.fill_M(diag_M)
     M = np.diag(diag_M)
-    print(diag_M)
+    # print(diag_M)
     while window.running:
         mouse = np.array([*window.get_cursor_pos(), 0.0])
         if window.is_pressed('a'):
