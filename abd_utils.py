@@ -15,7 +15,9 @@ n_dof = 12 * n_cubes
 delta = 0.08
 centered = False
 kappa = 1e7
-kappa_ipc = 1e9
+# kappa_ipc = 1.0e2
+kappa_ipc = 0.0
+local = True
 max_iters = 10
 dim_grad = 4
 grad_field = ti.Vector.field(3, float, shape=(dim_grad))
@@ -356,11 +358,8 @@ def line_search(dq, root, q0, grad0, q_tiled, M):
         # print(dq.shape, grad0.shape)
         wolfe = E1 <= E0 + c1 * alpha * (dq @ grad0) 
         alpha /= 2
-        if alpha < 1e-8:
-            print(f'dq_norm = {np.linalg.norm(dq)}, grad norm = {np.linalg.norm(grad0)}, dq @ grad = {dq @ grad0}')
-            print(f'E1 = {E1[0]}, alpha = {alpha}, wolfe rhs = {E0[0] + c1 * alpha * (dq @ grad0)}')
-            print(f"error, alpha = {alpha}, grad norm = {np.linalg.norm( grad0)}, dq = {np.linalg} ")
-            quit() 
+        assert alpha >= 1e-8, f'''dq_norm = {np.linalg.norm(dq)}, grad norm = {np.linalg.norm(grad0)}, dq @ grad = {dq @ grad0}
+            E1 = {E1[0]}, alpha = {alpha}, wolfe rhs = {E0[0] + c1 * alpha * (dq @ grad0)}'''
     return alpha * 2
 
 def tiled_q(dt, q_dot_t, q_t, f_tp1):
@@ -404,7 +403,7 @@ def step_size_upper_bound(dq, cubes, pts, idx):
     for c in cubes:
         i0 = c.id * 12
         dq_slice = dq[i0: i0 + 12].reshape((12))
-        # c.project_vertices_t2(dq_slice)
+        c.project_vertices_t2(dq_slice)
         c.p_t1 = c.v_transformed.to_numpy()
         c.t_t1 = np.zeros((12, 3 ,3))
         c.gen_triangles(c.t_t1)
@@ -415,7 +414,7 @@ def step_size_upper_bound(dq, cubes, pts, idx):
         # p_t1, t0_t1, t1_t1, t2_t1 = pt
         i, v, j, f  = ij
 
-        p_t1 = cubes[i].p_t0[v]
+        p_t1 = cubes[i].p_t1[v]
 
         # t_x = cubes[j].p_t1
         # t_idx = _indices[3 * f: 3 * f + 3]
@@ -424,13 +423,13 @@ def step_size_upper_bound(dq, cubes, pts, idx):
         # t1_t1 = t_x[t_idx[1]]
         # t2_t1 = t_x[t_idx[2]]
 
-        t0_t1 = cubes[j].t_t0[f, 0]
-        t1_t1 = cubes[j].t_t0[f, 1]
-        t2_t1 = cubes[j].t_t0[f, 2]
+        t0_t1 = cubes[j].t_t1[f, 0]
+        t1_t1 = cubes[j].t_t1[f, 1]
+        t2_t1 = cubes[j].t_t1[f, 2]
         
         pt_t1 = np.array([p_t1, t0_t1, t1_t1, t2_t1])
         print(f'norm dpt = {np.max(np.abs(pt_t1 - pt))}')
-        assert (pt_t1 - pt < 1e-2).all()
+        assert (pt_t1 - pt < dhat * 3).all(), f"inf norm pt_t1 - pt = {np.max(np.abs(pt_t1 - pt))}"
         _t = 1.0
         _, _t = ipctk.point_triangle_ccd(
             p, t0, t1, t2, p_t1, t0_t1, t1_t1, t2_t1)
@@ -562,26 +561,24 @@ def traverse(cubes, q, update_q=True, update_q_dot=True, project=True):
             c.project_vertices()
 
 
-def ipc_term(H, g, pts, idx):
-
-    assert (H == H.T).all()
-
+def ipc_term(H, g, pts, idx, cubes):
+    assert (H == H.T).all(), f'input hessian not symetric'
+    print(f'before adding ipc term, norm = {np.linalg.norm(H)}')
     for pt, ij in zip(pts, idx):
         p, t0, t1, t2 = pt
-        i, v, j, f = ij
+        _i, v, _j, f = ij
 
         grad_d2 = ipctk.point_triangle_distance_gradient(p, t0, t1, t2)
         hess_d2 = ipctk.point_triangle_distance_hessian(p, t0, t1, t2)
         d = ipctk.point_triangle_distance(p, t0, t1, t2)
         d = np.sqrt(d)
-        assert np.abs(d - dhat * 0.5) < 1e-6
         grad = grad_d2 / (2 * d)
         grad = grad.reshape((12, 1))
         hess = (hess_d2 / 2 - grad @ grad.T) / d
-        assert (hess == hess.T).all()
+        assert (hess == hess.T).all(), 'laplacian d not symetric'
         B_ = ipctk.barrier_gradient(d, dhat) * kappa_ipc
         B__ = ipctk.barrier_hessian(d, dhat) * kappa_ipc
-
+        # print(B_, B__)
         def jacobian(x):
             I = np.identity(3)
             return np.hstack([I, I * x[0], I * x[1], I * x[2]])
@@ -599,23 +596,36 @@ def ipc_term(H, g, pts, idx):
         # print(hess_t)
         # print(hess_p)
         # print(off_diag)
-        hess_t = project_PSD(hess_t)
-        hess_p = project_PSD(hess_p)
-        off_diag = project_PSD(off_diag)
+
+        assert (hess == hess.T).all()
+        # assert (hess_p == hess_p.T).all()
+
+        # hess_t = project_PSD(hess_t)
+        # hess_p = project_PSD(hess_p)
+        # off_diag = project_PSD(off_diag)
         # if trace:
 
         # FIXME: i should be cubes[i].id
-        assert (hess_t == hess_t).all()
-        assert (hess_p == hess_p).all()
+        i, j = cubes[_i].id, cubes[_j].id
+        assert i == _i and j == _j
+        # assert (hess_t == hess_t.T).all()
+        # assert (hess_p == hess_p.T).all()
+
         H[12 * i: 12 * (i + 1), 12 * i: 12 * (i + 1)] += hess_p
         H[12 * j: 12 * (j + 1), 12 * j: 12 * (j + 1)] += hess_t
 
+        # print(np.max(np.abs(H - H.T)))
+        # assert (np.abs(H - H.T) < 1e-5).all()
+
         H[12 * i: 12 * (i + 1), 12 * j: 12 * (j + 1)] += off_diag
         H[12 * j: 12 * (j + 1), 12 * i: 12 * (i + 1)] += off_diag.T
+        # assert (np.abs(H - H.T) < 1e-5).all()
 
-        g[i * 12: 12 * (i + 1)] += Jp.T @ grad_p
-        g[j * 12: 12 * (j + 1)] += Jt.T @ grad_t
-    assert (np.abs(H - H.T) < 1e-6).all()
+        g[i * 12: 12 * (i + 1)] += Jp.T @ grad_p  * B_ * kappa_ipc
+        g[j * 12: 12 * (j + 1)] += Jt.T @ grad_t  * B_ * kappa_ipc
+
+    print(f'after adding ipc term, norm = {np.linalg.norm(H)}')
+    assert (np.abs(H - H.T) < 1e-5).all(), "output hessian not symetric"
 
 def step_disjoint(cubes, M, V_inv):
     f = np.zeros((n_dof))
@@ -630,7 +640,8 @@ def step_disjoint(cubes, M, V_inv):
         Eo_differentials(cubes)
         hess = globals.H * dt ** 2 + M
         grad = globals.g.reshape((-1, 1)) * dt ** 2 + M @ (q - q_tiled).T
-        # ipc_term(hess, grad, pts, idx)
+        ipc_term(hess, grad, pts, idx, cubes)
+        # print(hess, grad)
         dq = -solve(hess, grad, assume_a="pos")
         if trace:
             print(f'dq shape = {dq.shape}')
@@ -731,7 +742,7 @@ def main():
     pos = [0., -1., 1.] if hinge else [-1., -1., -1.] if not centered else [-0.5, -0.5, -0.5]
 
     if not articulated:
-        pos[2] += dhat * 0.5
+        pos[2] += dhat * 0.9
     link = None if n_cubes < 2 else AffineCube(
         1, omega=[-10., 0., 0.], pos=pos, parent=_root, mass = 1e3)
 
@@ -770,6 +781,7 @@ def main():
         root.fill_M(diag_M)
     M = np.diag(diag_M)
     # print(diag_M)
+    ts = 0
     while window.running:
         mouse = np.array([*window.get_cursor_pos(), 0.0])
         if window.is_pressed('a'):
@@ -814,7 +826,12 @@ def main():
             root.mesh(scene)
             root.particles(scene)
         canvas.scene(scene)
-        window.show()
+        if local:
+            window.show()
+
+        elif not local and ts % 10 == 0:
+            window.save_image(f'{ts // 10}.png')
+        ts += 1
 
 
 if __name__ == "__main__":
