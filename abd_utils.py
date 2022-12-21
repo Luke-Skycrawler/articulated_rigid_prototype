@@ -4,7 +4,7 @@ from arp import Cube, skew
 from scipy.linalg import lu, ldl, solve
 import ipctk
 from PSD_projection import project_PSD
-
+from scipy.linalg.lapack import dsysv
 ti.init(ti.x64, default_fp=ti.f64)
 
 n_cubes = 2
@@ -15,8 +15,8 @@ n_dof = 12 * n_cubes
 delta = 0.08
 centered = False
 kappa = 1e7
-# kappa_ipc = 1.0e2
-kappa_ipc = 0.0
+kappa_ipc = 1.0e9
+# kappa_ipc = 0.0
 local = True
 max_iters = 10
 dim_grad = 4
@@ -428,7 +428,6 @@ def step_size_upper_bound(dq, cubes, pts, idx):
         t2_t1 = cubes[j].t_t1[f, 2]
         
         pt_t1 = np.array([p_t1, t0_t1, t1_t1, t2_t1])
-        print(f'norm dpt = {np.max(np.abs(pt_t1 - pt))}')
         assert (pt_t1 - pt < dhat * 3).all(), f"inf norm pt_t1 - pt = {np.max(np.abs(pt_t1 - pt))}"
         _t = 1.0
         _, _t = ipctk.point_triangle_ccd(
@@ -621,8 +620,8 @@ def ipc_term(H, g, pts, idx, cubes):
         H[12 * j: 12 * (j + 1), 12 * i: 12 * (i + 1)] += off_diag.T
         # assert (np.abs(H - H.T) < 1e-5).all()
 
-        g[i * 12: 12 * (i + 1)] += Jp.T @ grad_p  * B_ * kappa_ipc
-        g[j * 12: 12 * (j + 1)] += Jt.T @ grad_t  * B_ * kappa_ipc
+        g[i * 12: 12 * (i + 1)] += Jp.T @ grad_p  * B_
+        g[j * 12: 12 * (j + 1)] += Jt.T @ grad_t  * B_
 
     print(f'after adding ipc term, norm = {np.linalg.norm(H)}')
     assert (np.abs(H - H.T) < 1e-5).all(), "output hessian not symetric"
@@ -642,7 +641,9 @@ def step_disjoint(cubes, M, V_inv):
         grad = globals.g.reshape((-1, 1)) * dt ** 2 + M @ (q - q_tiled).T
         ipc_term(hess, grad, pts, idx, cubes)
         # print(hess, grad)
-        dq = -solve(hess, grad, assume_a="pos")
+        # dq = -solve(hess, grad, assume_a="pos")
+        _, _, dq, _ = dsysv(hess, grad)
+        dq = -dq
         if trace:
             print(f'dq shape = {dq.shape}')
             print(f'hess shape = {hess.shape}')
