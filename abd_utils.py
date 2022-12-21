@@ -338,10 +338,29 @@ class AffineCube(Cube):
             
 # @ti.func
 c1 = 1e-4
-def line_search(dq, root, q0, grad0, q_tiled, M):
+def line_search(dq, root, q0, grad0, q_tiled, M, idx = None, pts = None, cubes = None):
+    def v_barrier(pt):
+        d2 = ipctk.point_triangle_distance(*pt)
+        d = np.sqrt(d2)
+        return ipctk.barrier(d, dhat)
+
+    def Vb(q0, q_tiled, M, cubes, idx, dq = None, pts = None):
+        assert dq is not None or pts is not None, "specify at least one argument from dq and pts"
+        e = 0.0
+        if dq is not None:
+            pt_dq(dq, cubes)
+            for ij in idx:
+                pt = pt_t1_array(cubes, ij)
+                e += v_barrier(pt)
+        else :
+            for pt in pts:
+                e += v_barrier(pt)
+        # print(f'ipc energy at {"line search start" if dq is None else "iter"}, e = {e}')
+        return np.sum(globals.Eo) * dt ** 2 + 0.5 * (q0 - q_tiled) @ M @ (q0 - q_tiled).T + e * kappa_ipc
+        
     wolfe = False
     alpha = 1
-    E0 = np.sum(globals.Eo) * dt ** 2 + 0.5 * (q0 - q_tiled) @ M @ (q0 - q_tiled).T
+    E0 = Vb(q0, q_tiled, M, cubes, idx, pts = pts)
     while not wolfe and np.linalg.norm(grad0) > 1e-3:
         q1 = q0 + dq * alpha
         if not isinstance(root, list):       
@@ -354,7 +373,7 @@ def line_search(dq, root, q0, grad0, q_tiled, M):
                 i0 = c.id
                 globals.Eo[i0] = E
 
-        E1 = np.sum(globals.Eo) * dt ** 2 + 0.5 * (q1 - q_tiled) @ M @ (q1 - q_tiled).T
+        E1 = Vb(q1, q_tiled, M, cubes, idx, dq = dq * alpha)
         # print(dq.shape, grad0.shape)
         wolfe = E1 <= E0 + c1 * alpha * (dq @ grad0) 
         alpha /= 2
@@ -397,41 +416,40 @@ def Eo_differentials(cubes):
         E = Eo(c.q)
         globals.Eo[c.id] = E
 
-    
-def step_size_upper_bound(dq, cubes, pts, idx):
-    t = 1.0
+
+def pt_dq(dq, cubes):
     for c in cubes:
         i0 = c.id * 12
-        dq_slice = dq[i0: i0 + 12].reshape((12))
+        dq_slice = dq[0, i0: i0 + 12].reshape((12))
         c.project_vertices_t2(dq_slice)
         c.p_t1 = c.v_transformed.to_numpy()
         c.t_t1 = np.zeros((12, 3 ,3))
         c.gen_triangles(c.t_t1)
-    # _indices = cubes[0].indices.to_numpy()
 
+def pt_t1_array(cubes, ij):
+    i, v, j, f  = ij
+
+    p_t1 = cubes[i].p_t1[v]
+    t0_t1 = cubes[j].t_t1[f, 0]
+    t1_t1 = cubes[j].t_t1[f, 1]
+    t2_t1 = cubes[j].t_t1[f, 2]
+    
+    pt_t1 = np.array([p_t1, t0_t1, t1_t1, t2_t1])
+    return pt_t1
+
+def step_size_upper_bound(dq, cubes, pts, idx):
+    t = 1.0
+    pt_dq(dq, cubes)
     for pt, ij in zip(pts, idx):
-        p, t0, t1, t2 = pt
-        # p_t1, t0_t1, t1_t1, t2_t1 = pt
-        i, v, j, f  = ij
-
-        p_t1 = cubes[i].p_t1[v]
-
-        # t_x = cubes[j].p_t1
-        # t_idx = _indices[3 * f: 3 * f + 3]
-
-        # t0_t1 = t_x[t_idx[0]]
-        # t1_t1 = t_x[t_idx[1]]
-        # t2_t1 = t_x[t_idx[2]]
-
-        t0_t1 = cubes[j].t_t1[f, 0]
-        t1_t1 = cubes[j].t_t1[f, 1]
-        t2_t1 = cubes[j].t_t1[f, 2]
+        # p, t0, t1, t2 = pt
         
-        pt_t1 = np.array([p_t1, t0_t1, t1_t1, t2_t1])
-        assert (pt_t1 - pt < dhat * 3).all(), f"inf norm pt_t1 - pt = {np.max(np.abs(pt_t1 - pt))}"
+        pt_t1 = pt_t1_array(cubes, ij)
+
+        # assert (pt_t1 - pt < dhat * 3).all(), f"inf norm pt_t1 - pt = {np.max(np.abs(pt_t1 - pt))}"
+
         _t = 1.0
         _, _t = ipctk.point_triangle_ccd(
-            p, t0, t1, t2, p_t1, t0_t1, t1_t1, t2_t1)
+            *pt, *pt_t1)
         if _t < 1.0 :
             print(f'collision detected, toi, points = {_t}, {pt}, {pt_t1}')
         t = min(t, _t)
@@ -562,7 +580,7 @@ def traverse(cubes, q, update_q=True, update_q_dot=True, project=True):
 
 def ipc_term(H, g, pts, idx, cubes):
     assert (H == H.T).all(), f'input hessian not symetric'
-    print(f'before adding ipc term, norm = {np.linalg.norm(H)}')
+    # print(f'before adding ipc term, norm = {np.linalg.norm(H)}')
     for pt, ij in zip(pts, idx):
         p, t0, t1, t2 = pt
         _i, v, _j, f = ij
@@ -623,7 +641,7 @@ def ipc_term(H, g, pts, idx, cubes):
         g[i * 12: 12 * (i + 1)] += Jp.T @ grad_p  * B_
         g[j * 12: 12 * (j + 1)] += Jt.T @ grad_t  * B_
 
-    print(f'after adding ipc term, norm = {np.linalg.norm(H)}')
+    # print(f'after adding ipc term, norm = {np.linalg.norm(H)}')
     assert (np.abs(H - H.T) < 1e-5).all(), "output hessian not symetric"
 
 def step_disjoint(cubes, M, V_inv):
@@ -652,15 +670,15 @@ def step_disjoint(cubes, M, V_inv):
         print("norm(dq) = ", np.max(np.abs(dq)))
         
         
+        dq = dq.reshape((1 , -1)) 
         t = step_size_upper_bound(dq, cubes, pts, idx)
         dq *= t
-        dq = dq.reshape((1 , -1)) 
-        alpha = line_search(dq, cubes, q, grad, q_tiled, M)
+        alpha = line_search(dq, cubes, q, grad, q_tiled, M, idx, pts, cubes)
         # FIXME: line search arguments, fixed
         q += dq * alpha
         traverse(cubes, q, update_q=True, update_q_dot=False, project=False)
 
-        do_iter = np.linalg.norm(dq * alpha) > 1e-4
+        do_iter = np.linalg.norm(dq * alpha) > 1e-4 and iter < max_iters
         iter += 1
         if not do_iter:
             print(f'converge after {iter} iters')
@@ -718,7 +736,7 @@ def step_link(root, M, V_inv):
         q += dq * alpha
         # print(dq, q - q_tiled)
         root.traverse(q, update_q = True, update_q_dot = False, project = False)
-        do_iter = np.linalg.norm(dq * alpha) > 1e-4
+        do_iter = np.linalg.norm(dq * alpha) > 1e-4 and iter < max_iters
         iter += 1
         if not do_iter: 
             print(f'converge after {iter} iters')
