@@ -280,39 +280,13 @@ class AffineCube(Cube):
             self.v_transformed[i] = A @ self.vertices[i] + (self.q[0] + dq0)
 
     def traverse(self, q, update_q = True, update_q_dot = True, project = True):
-        i0 = self.id * 12
-        q_next = q[0, i0: i0 + 12].reshape((4, 3))
-        q_current = self.q0.to_numpy()
-        q_dot_next = (q_next - q_current) / dt
-        q_dot_current = self.q_dot.to_numpy()
-
-        # q_next = alpha * q_next + (1 - alpha) * q_current
-        # q_dot_next = q_dot_next * alpha + (1 - alpha) * q_dot_current
-        if update_q:
-            self.q.from_numpy(q_next)
-        if update_q_dot:
-            self.q_dot.from_numpy(q_dot_next)
-        if project:
-            self.q0.copy_from(self.q)
-            self.project_vertices()
-        for c in self.children:
-            c.traverse(q, update_q, update_q_dot, project)
+        traverse([self], q, update_q, update_q_dot, project)
 
     def fill_M(self, M):
-        i0 = self.id * 12
-        M[i0: i0 + 3] = self.m
-        M[i0 + 3: i0 + 12] = self.Ic
-        for c in self.children:
-            c.fill_M(M)
+        fill_M([self], M)
 
     def assemble_q_q_dot(self):
-        _q = self.q.to_numpy().reshape((1, -1))
-        _q_dot = self.q_dot.to_numpy().reshape((1, -1))
-        for c in self.children:
-            q, q_dot = c.assemble_q_q_dot()
-            _q = np.hstack([_q, q])
-            _q_dot = np.hstack([_q_dot, q_dot])
-        return _q, _q_dot
+        return assemble_q_q_dot([self])
 
     @ti.kernel
     def gen_triangles(self, t: ti.types.ndarray()):
@@ -325,14 +299,14 @@ class AffineCube(Cube):
             
 # @ti.func
 c1 = 1e-4
-def line_search(dq, root, q0, grad0, q_tiled, M, idx = None, pts = None, cubes = None):
+def line_search(dq, root, q0, grad0, q_tiled, M, idx = [], pts = [], cubes = []):
     def v_barrier(pt):
         d2 = ipctk.point_triangle_distance(*pt)
         d = np.sqrt(d2)
         return ipctk.barrier(d, dhat)
 
-    def Vb(q0, q_tiled, M, cubes, idx, dq = None, pts = None):
-        assert dq is not None or pts is not None, "specify at least one argument from dq and pts"
+    def Vb(q0, q_tiled, M, cubes, idx, dq = None, pts = []):
+        # assert dq is not None or pts is not None, "specify at least one argument from dq and pts"
         e = 0.0
         if dq is not None:
             pt_dq(dq, cubes)
@@ -381,15 +355,19 @@ def tiled_q(dt, q_dot_t, q_t, f_tp1):
     return q_t + dt * q_dot_t + dt ** 2 * f_tp1
 
 
-def assemble_q_q_dot(roots):
+def assemble_q_q_dot(cubes):
     q = np.zeros((1, n_dof))
     q_dot = np.zeros_like(q)
-    for c in roots:
+    for c in cubes:
         _q = c.q.to_numpy().reshape((1, -1))
         _q_dot = c.q_dot.to_numpy().reshape((1, -1))
 
         q[0, c.id * 12: (c.id + 1) * 12] = _q
         q_dot[0, c.id * 12: (c.id + 1) * 12] = _q_dot
+
+        __q, __q_dot = assemble_q_q_dot(c.children)
+        q+= __q
+        q_dot += __q_dot
     return q, q_dot
 
 
@@ -411,6 +389,8 @@ def Eo_differentials(cubes):
 
         E = Eo(c.q)
         globals.Eo[c.id] = E
+
+        Eo_differentials(c.children)
 
 
 def pt_dq(dq, cubes):
@@ -520,9 +500,6 @@ def candidacy(up:ti.types.ndarray(), lp:ti.types.ndarray(), ut:ti.types.ndarray(
         board_phase_candidacy = not ((upx < ltx).all() or (lpx > utx).all())
 
         ret[p, t] = board_phase_candidacy
-
-
-
     
 def pt_intersect(ci, cj, I, J, dhat = 0.0):
     '''
@@ -560,6 +537,8 @@ def fill_M(cubes, M):
         M[i0: i0 + 3] = c.m
         M[i0 + 3: i0 + 12] = c.Ic
 
+        fill_M(c.children, M)
+
 
 def traverse(cubes, q, update_q=True, update_q_dot=True, project=True):
     for c in cubes:
@@ -578,6 +557,8 @@ def traverse(cubes, q, update_q=True, update_q_dot=True, project=True):
         if project:
             c.q0.copy_from(c.q)
             c.project_vertices()
+        
+        traverse(c.children, q, update_q, update_q_dot, project)
 
 
 def ipc_term(H, g, pts, idx, cubes):
@@ -607,10 +588,19 @@ def ipc_term(H, g, pts, idx, cubes):
 
         grad_t = grad[3:]
         grad_p = grad[: 3]
-        hess_t = Jt.T @ (B_ * hess[3:, 3:] + B__ * grad_t @ grad_t.T) @ Jt
-        hess_p = Jp.T @ (B_ * hess[:3, : 3] + B__ * grad_p @ grad_p.T) @ Jp
+        
+        ipc_hess = B_ * hess + B__ * grad @ grad.T
+        # ipc_hess = project_PSD(ipc_hess)
+        
+        hess_t = Jt.T @ (ipc_hess[3: , 3:]) @ Jt
+        hess_p = Jp.T @ (ipc_hess[:3 , : 3]) @ Jp
+        # off_diag = Jp.T @ (ipc_hess[:3, 3: ]) @ Jt
+        off_diag = np.zeros((12, 12))
+        
+        # hess_t = Jt.T @ (B_ * hess[3:, 3:] + B__ * grad_t @ grad_t.T) @ Jt
+        # hess_p = Jp.T @ (B_ * hess[:3, : 3] + B__ * grad_p @ grad_p.T) @ Jp
 
-        off_diag = Jp.T @ (B_ * hess[: 3, 3:] + B__ * grad_p @ grad_t.T) @ Jt
+        # off_diag = Jp.T @ (B_ * hess[: 3, 3:] + B__ * grad_p @ grad_t.T) @ Jt
 
         # print(hess_t)
         # print(hess_p)
@@ -618,8 +608,8 @@ def ipc_term(H, g, pts, idx, cubes):
 
         # assert (hess_p == hess_p.T).all()
 
-        hess_t = project_PSD(hess_t)
-        hess_p = project_PSD(hess_p)
+        # hess_t = project_PSD(hess_t)
+        # hess_p = project_PSD(hess_p)
         # off_diag = project_PSD(off_diag)
 
         # FIXME: i should be cubes[i].id
@@ -686,7 +676,7 @@ def step_disjoint(cubes, M, V_inv):
         do_iter = np.linalg.norm(dq * alpha) > 1e-4 and iter < max_iters
         iter += 1
 
-    print(f'\nconverge after {iter} iters\n')
+    print(f'\nconverge after {iter} iters')
     traverse(cubes, q)
 
 
@@ -769,12 +759,12 @@ def main():
 
     if not articulated:
         pos[2] += dhat * 0.9
-        pos = [0.0, 100.0, 0.0]
+        # pos = [0.0, 100.0, 0.0]
     link = None if n_cubes < 2 else AffineCube(
-        1, omega=[-10., 0., 0.], pos=pos, parent=_root, mass = 1e3)
+        1, omega=[-10., 0., 0.], pos=pos, parent=_root if articulated else None, mass = 1e3)
 
     link2 = None if n_cubes < 3 else AffineCube(
-        2, omega=[0., 0., 10.], pos=pos2, vc=vc2, parent=link, mass=1e3)
+        2, omega=[0., 0., 10.], pos=pos2, vc=vc2, parent=link if articulated else None, mass=1e3)
 
     C = np.zeros((m, n_dof), np.float64) if link is None else fill_C(
         1, 0, -link.r_lk_hat.to_numpy(), link.r_pkl_hat.to_numpy())
@@ -795,8 +785,9 @@ def main():
         # q, q_dot = root.assemble_q_q_dot()
         # print(C[:, : 12])
         # print(C @ q.T)
-
-    V, V_inv = U(C) if articulated else None, None
+    V, V_inv = None, None
+    if articulated:
+        V, V_inv = U(C)
     # V_inv = np.identity(n_dof, np.float64)
 
     # print(np.max(V @ V_inv - np.identity(n_dof, np.float64)))
@@ -870,12 +861,7 @@ def main():
         elif not local and ts % 10 == 0:
             window.save_image(f'{ts // 10}.png')
         ts += 1
-        print(f'timestep = {ts}')
-        if ts >= 43:
-            q_ = link2.q_dot.to_numpy()
-            n_q = np.max(np.abs(q_))
-            print(f'q_dot={q_}, \n\nnorm = {n_q}')
-
+        print(f'timestep = {ts}\n')
 
 if __name__ == "__main__":
     main()
