@@ -10,7 +10,8 @@ ti.init(ti.x64, default_fp=ti.f64)
 n_cubes = 3
 hinge = True
 gravity = -np.array([0., -9.8e1, 0.0])
-m = (n_cubes - 1) * 3 if not hinge else (n_cubes - 1) * 6
+articulated = False
+m = 0 if not articulated else (n_cubes - 1) * 3 if not hinge else (n_cubes - 1) * 6
 n_dof = 12 * n_cubes
 delta = 0.08
 centered = False
@@ -28,7 +29,6 @@ a_cols = n_cubes * 4
 a_rows = m // 3
 alpha = 1.0
 trace = False
-articulated = False
 dhat = 1e-2
 a = ti.field(float, shape=(a_rows, a_cols)) if a_rows and a_cols else None
 d = ti.field(float, shape=(a_rows, a_cols)) if a_rows and a_cols else None
@@ -634,7 +634,7 @@ def ipc_term(H, g, pts, idx, cubes):
     print(f'after adding ipc term, norm = {np.linalg.norm(H)}')
     # assert (np.abs(H - H.T) < 1e-5).all(), "output hessian not symetric"
 
-def step_disjoint(cubes, M, V_inv):
+def step(cubes, M, V_inv):
     f = np.zeros((n_dof))
     q, q_dot = assemble_q_q_dot(cubes)
     q_tiled = tiled_q(dt, q_dot, q, f)
@@ -645,13 +645,18 @@ def step_disjoint(cubes, M, V_inv):
     while do_iter:
         q, q_dot = assemble_q_q_dot(cubes)
         Eo_differentials(cubes)
-        hess = globals.H * dt ** 2 + M
-        grad = globals.g.reshape((-1, 1)) * dt ** 2 + M @ (q - q_tiled).T
+        grad = V_inv.T @ (globals.g.reshape((-1, 1)) *
+                            dt ** 2 + M @ (q - q_tiled).T)
+
+        hess = V_inv.T @ (globals.H * dt ** 2 + M) @ V_inv
+
         ipc_term(hess, grad, pts, idx, cubes)
         # print(hess, grad)
         # dq = -solve(hess, grad, assume_a="pos")
-        _, _, dq, _ = dsysv(hess, grad)
-        dq = -dq
+        _, _, dz, _ = dsysv(hess[m: , m:], grad[m :])
+        dz = -dz
+        dz = np.hstack([np.zeros((1, m), np.float64), dz.reshape(1, -1)])
+        dq = dz @ V_inv.T
         if trace:
             print(f'dq shape = {dq.shape}')
             print(f'hess shape = {hess.shape}')
@@ -681,20 +686,24 @@ def step_disjoint(cubes, M, V_inv):
 
 
 def step_link(root, M, V_inv):
+    '''
+    deprecated
+    '''
     f = np.zeros((n_dof))
     # f[:3] = root.m * gravity
     # f[12: 15] = link.m * gravity
-    q, q_dot = root.assemble_q_q_dot()
+    q, q_dot = assemble_q_q_dot(root)
     q_tiled = tiled_q(dt, q_dot, q, f)
     do_iter = True
     iter = 0
     while do_iter:
     # for iter in range(max_iters):
-        q, q_dot = root.assemble_q_q_dot()
+        q, q_dot = assemble_q_q_dot(root)
         # shape = 1 * 24, transpose before use
-        root.grad_Eo_top_down()
-        root.hess_Eo_top_down()
-        root.Eo_top_down()
+        # root.grad_Eo_top_down()
+        # root.hess_Eo_top_down()
+        # root.Eo_top_down()
+        Eo_differentials(root)
         if trace :
             print(f'iter = {iter}')
             print('E = ', globals.Eo[0] * dt ** 2 + 0.5 * (q - q_tiled) @ M @ (q - q_tiled).T)
@@ -709,16 +718,6 @@ def step_link(root, M, V_inv):
 
         hess = V_inv.T @ (globals.H * dt ** 2 + M) @ V_inv
 
-        # set rows and columns to zero
-        # grad[0: 3] = np.zeros((3), np.float64)
-        # hess[0:3, :] = np.zeros((3, n_dof), np.float64)
-        # hess[:, 0: 3] = np.zeros((n_dof, 3), np.float64)
-
-
-        # dz = -np.linalg.solve(hess[m:, m:], grad[m:])
-        # l, d, perm = ldl(hess[m:, m:], lower= 0)
-        # print(hess[m:, m:] - hess[m:, m:].T)
-        # print(hess[m:, m:])
         dz = -solve(hess[m:, m:], grad[m:], assume_a = "pos")
         # set z_i = s_i if s_i != 0
         dz = np.hstack([np.zeros((1, m), np.float64), dz.reshape(1, -1)])
@@ -730,16 +729,15 @@ def step_link(root, M, V_inv):
         # alpha = 1.0
         q += dq * alpha
         # print(dq, q - q_tiled)
-        root.traverse(q, update_q = True, update_q_dot = False, project = False)
+        root[0].traverse(q, update_q = True, update_q_dot = False, project = False)
         do_iter = np.linalg.norm(dq * alpha) > 1e-4 and iter < max_iters
         iter += 1
         if not do_iter: 
             print(f'converge after {iter} iters')
             
-    root.traverse(q)
+    root[0].traverse(q)
 
 
-step = step_link if articulated else step_disjoint
 def main():
     formatter = '{:.2e}'.format
     np.set_printoptions(formatter={'float_kind': formatter})
@@ -769,7 +767,7 @@ def main():
     C = np.zeros((m, n_dof), np.float64) if link is None else fill_C(
         1, 0, -link.r_lk_hat.to_numpy(), link.r_pkl_hat.to_numpy())
     
-    root = _root if articulated else [_root, link]
+    root = [_root] if articulated else [_root, link]
     if link2 is not None and not articulated:
         root.append(link2)
     if hinge and link is not None:
@@ -785,10 +783,9 @@ def main():
         # q, q_dot = root.assemble_q_q_dot()
         # print(C[:, : 12])
         # print(C @ q.T)
-    V, V_inv = None, None
+    V = V_inv = np.identity(n_dof, np.float64)
     if articulated:
         V, V_inv = U(C)
-    # V_inv = np.identity(n_dof, np.float64)
 
     # print(np.max(V @ V_inv - np.identity(n_dof, np.float64)))
     
@@ -846,6 +843,7 @@ def main():
         # copied code ---------------------------------------
         if not pause:
             step(root, M, V_inv)
+            # step_link(root, M, V_inv)
         if isinstance(root, list):
             for c  in root:
                 c.mesh(scene)
