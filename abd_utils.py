@@ -302,8 +302,8 @@ c1 = 1e-4
 def line_search(dq, root, q0, grad0, q_tiled, M, idx = [], pts = [], cubes = []):
     def v_barrier(pt):
         d2 = ipctk.point_triangle_distance(*pt)
-        d = np.sqrt(d2)
-        return ipctk.barrier(d, dhat)
+        # d = np.sqrt(d2)
+        return ipctk.barrier(d2, dhat) * kappa_ipc
 
     def Vb(q0, q_tiled, M, cubes, idx, dq = None, pts = []):
         # assert dq is not None or pts is not None, "specify at least one argument from dq and pts"
@@ -447,33 +447,6 @@ def compute_constraint_set(cubes):
         # shape 8x3
         c.gen_triangles(c.t_t0)
 
-        # t_t1 = np.zeros_like(t_t0)
-        # i0 = c.id * 12
-        # # dq_slice = dq[i0: i0 + 12]
-        # # c.project_vertices_t2(dq_slice)
-        # c.p_t1 = c.v_transformed.to_numpy()
-        # c.gen_triangles(t_t1)
-
-        # c.t_t0 = t_t0
-        # c.t_t1 = t_t1
-
-        # p = np.array([c.p_t0, c.p_t1])
-        # c.lp = np.min(p, axis = 0)
-        # c.up = np.max(p, axis = 0)
-
-        # l_t0 = np.min(t_t0, axis = 1)
-        # u_t0 = np.max(t_t0, axis = 1)
-        # l_t1 = np.min(t_t1, axis = 1)
-        # u_t1 = np.max(t_t1, axis = 1)
-
-        # l = np.array([l_t0, l_t1])
-        # u = np.array([u_t0, u_t1])
-
-        # c.lt = np.min(l, axis = 0)
-        # c.ut = np.max(u, axis = 0)
-
-        # print(c.lt.shape, c.ut.shape)
-        # assert 12x3
 
     pt_set = []
     idx_set = []
@@ -563,6 +536,8 @@ def traverse(cubes, q, update_q=True, update_q_dot=True, project=True):
 
 def ipc_term(H, g, pts, idx, cubes):
     assert (H == H.T).all(), f'input hessian not symetric'
+    vnp = cubes[0].vertices.to_numpy()
+    inp = cubes[0].indices.to_numpy()
     print(f'before adding ipc term, norm = {np.linalg.norm(H)}')
     for pt, ij in zip(pts, idx):
         p, t0, t1, t2 = pt
@@ -571,10 +546,10 @@ def ipc_term(H, g, pts, idx, cubes):
         grad_d2 = ipctk.point_triangle_distance_gradient(p, t0, t1, t2)
         hess_d2 = ipctk.point_triangle_distance_hessian(p, t0, t1, t2)
         d = ipctk.point_triangle_distance(p, t0, t1, t2)
-        d = np.sqrt(d)
-        grad = grad_d2 / (2 * d)
+        # d = np.sqrt(d)
+        grad = grad_d2# / (2 * d)
         grad = grad.reshape((12, 1))
-        hess = (hess_d2 / 2 - grad @ grad.T) / d
+        hess = hess_d2 #(hess_d2 / 2 - grad @ grad.T) / d
         assert (np.abs(hess - hess.T) < 1e-5).all(), 'laplacian d not symetric'
         B_ = ipctk.barrier_gradient(d, dhat) * kappa_ipc
         B__ = ipctk.barrier_hessian(d, dhat) * kappa_ipc
@@ -582,20 +557,21 @@ def ipc_term(H, g, pts, idx, cubes):
         def jacobian(x):
             I = np.identity(3)
             return np.hstack([I, I * x[0], I * x[1], I * x[2]])
-
-        Jt = np.vstack([jacobian(t0), jacobian(t1), jacobian(t2)])
-        Jp = jacobian(p)
+        t0_tile, t1_tile, t2_tile = vnp[inp[3 * f]], vnp[inp[3 * f + 1]], vnp[inp[3 * f + 2]]
+        p_tile = vnp[v]
+        Jt = np.vstack([jacobian(t0_tile), jacobian(t1_tile), jacobian(t2_tile)])
+        Jp = jacobian(p_tile)
 
         grad_t = grad[3:]
         grad_p = grad[: 3]
         
         ipc_hess = B_ * hess + B__ * grad @ grad.T
-        # ipc_hess = project_PSD(ipc_hess)
+        ipc_hess = project_PSD(ipc_hess)
         
         hess_t = Jt.T @ (ipc_hess[3: , 3:]) @ Jt
         hess_p = Jp.T @ (ipc_hess[:3 , : 3]) @ Jp
-        # off_diag = Jp.T @ (ipc_hess[:3, 3: ]) @ Jt
-        off_diag = np.zeros((12, 12))
+        # off_diag = np.zeros((12, 12))
+        off_diag = Jp.T @ (ipc_hess[:3, 3: ]) @ Jt
         
         # hess_t = Jt.T @ (B_ * hess[3:, 3:] + B__ * grad_t @ grad_t.T) @ Jt
         # hess_p = Jp.T @ (B_ * hess[:3, : 3] + B__ * grad_p @ grad_p.T) @ Jp
