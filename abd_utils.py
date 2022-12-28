@@ -29,7 +29,7 @@ a_cols = n_cubes * 4
 a_rows = m // 3
 alpha = 1.0
 trace = False
-dhat = 1e-2
+dhat = 1e-4
 a = ti.field(float, shape=(a_rows, a_cols)) if a_rows and a_cols else None
 d = ti.field(float, shape=(a_rows, a_cols)) if a_rows and a_cols else None
 # dual matrix to get the inverse
@@ -303,7 +303,7 @@ def line_search(dq, root, q0, grad0, q_tiled, M, idx = [], pts = [], cubes = [])
     def v_barrier(pt):
         d2 = ipctk.point_triangle_distance(*pt)
         # d = np.sqrt(d2)
-        return ipctk.barrier(d2, dhat) * kappa_ipc
+        return ipctk.barrier(d2, dhat)
 
     def Vb(q0, q_tiled, M, cubes, idx, dq = None, pts = []):
         # assert dq is not None or pts is not None, "specify at least one argument from dq and pts"
@@ -327,17 +327,14 @@ def line_search(dq, root, q0, grad0, q_tiled, M, idx = [], pts = [], cubes = [])
     grad_norm_2 = np.linalg.norm(grad0)
     while not wolfe and grad_norm_2 > 1e-3:
         q1 = q0 + dq * alpha
-        if not isinstance(root, list):       
-            root.traverse(q1, True, False, False)
-            root.Eo_top_down()
-        else :
-            traverse(root, q1, True, False, False) 
-            for c in root:
-                E = Eo(c.q)
-                i0 = c.id
-                globals.Eo[i0] = E
 
-        E1 = Vb(q1, q_tiled, M, cubes, idx, dq = dq * alpha)
+        traverse(root, q1, True, False, False) 
+        for c in root:
+            E = Eo(c.q)
+            i0 = c.id
+            globals.Eo[i0] = E
+
+        E1 = Vb(q1, q_tiled, M, cubes, idx, dq = np.zeros_like(dq))
         # print(dq.shape, grad0.shape)
         wolfe = E1 <= E0 + c1 * alpha * (dq @ grad0)[0, 0]
         alpha /= 2
@@ -401,6 +398,8 @@ def pt_dq(dq, cubes):
         c.p_t1 = c.v_transformed.to_numpy()
         c.t_t1 = np.zeros((12, 3 ,3))
         c.gen_triangles(c.t_t1)
+        
+        pt_dq(dq, c.children)
 
 def pt_t1_array(cubes, ij):
     i, v, j, f  = ij
@@ -440,6 +439,29 @@ def step_size_upper_bound(dq, cubes, pts, idx):
 
 
 def compute_constraint_set(cubes):
+    def pt_intersect(ci, cj, I, J, dhat = 0.0):
+        '''
+        test body ci's point against body cj's triangles  
+        '''
+        pts = []
+        idx = []
+        # cand = np.zeros((8, 12))
+        # candidacy(ci.up, ci.lp, cj.ut, cj.lt, cand)
+        cand = np.ones((8, 12))
+        for i in range(8):
+            for j in range(12):
+                if cand[i, j]:
+                    p = ci.p_t0[i]
+                    t0 = cj.t_t0[j, 0]
+                    t1 = cj.t_t0[j, 1]
+                    t2 = cj.t_t0[j, 2]
+
+                    d2 = ipctk.point_triangle_distance(p, t0, t1, t2)
+                    if d2 < dhat:
+                        pts.append([p, t0, t1, t2 ])
+                        idx.append([I, i, J, j])
+        return pts, idx
+
     for c in cubes:
         c.t_t0 = np.zeros((12, 3, 3))
         c.project_vertices()
@@ -474,35 +496,6 @@ def candidacy(up:ti.types.ndarray(), lp:ti.types.ndarray(), ut:ti.types.ndarray(
 
         ret[p, t] = board_phase_candidacy
     
-def pt_intersect(ci, cj, I, J, dhat = 0.0):
-    '''
-    test body ci's point against body cj's triangles  
-    '''
-    pts = []
-    idx = []
-    # cand = np.zeros((8, 12))
-    # candidacy(ci.up, ci.lp, cj.ut, cj.lt, cand)
-    cand = np.ones((8, 12))
-    for i in range(8):
-        for j in range(12):
-            if cand[i, j]:
-                p = ci.p_t0[i]
-                t0 = cj.t_t0[j, 0]
-                t1 = cj.t_t0[j, 1]
-                t2 = cj.t_t0[j, 2]
-
-                d2 = ipctk.point_triangle_distance(p, t0, t1, t2)
-                d = np.sqrt(d2)
-
-                if d < dhat:
-                    # p_t1 = ci.p_t1[i]
-                    # t0_t1 = cj.t_t1[j, 0]
-                    # t1_t1 = cj.t_t1[j, 1]
-                    # t2_t1 = cj.t_t1[j, 2]
-                    # ret.append([p, t0, t1, t2, p_t1, t0_t1, t1_t1, t2_t1])
-                    pts.append([p, t0, t1, t2 ])
-                    idx.append([I, i, J, j])
-    return pts, idx
                 
 def fill_M(cubes, M):
     for c in cubes:
@@ -647,14 +640,15 @@ def step(cubes, M, V_inv):
         alpha = line_search(dq, cubes, q, grad, q_tiled, M, idx, pts, cubes)
         print(f'line search: alpha = {alpha}')
         # FIXME: line search arguments, fixed
-        q += dq * alpha
-        traverse(cubes, q, update_q=True, update_q_dot=False, project=False)
+
+        # q += dq * alpha
+        # traverse(cubes, q, update_q=True, update_q_dot=False, project=False)
 
         pt_dq(np.zeros_like(dq), cubes)
         for i, ij in enumerate(idx):
             pts[i] = pt_t1_array(cubes, ij)
 
-        do_iter = np.linalg.norm(dq * alpha) > 1e-4 and iter < max_iters
+        do_iter = np.linalg.norm(dq * alpha) > 1e-8 and iter < max_iters
         iter += 1
 
     print(f'\nconverge after {iter} iters')
