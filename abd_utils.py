@@ -24,6 +24,7 @@ dim_grad = 4
 grad_field = ti.Vector.field(3, float, shape=(dim_grad))
 hess_field = ti.Matrix.field(3, 3, float, shape=(dim_grad, dim_grad))
 dt = 5e-3
+mass = 1e3
 ZERO = 1e-9
 a_cols = n_cubes * 4
 a_rows = m // 3
@@ -173,26 +174,48 @@ def kronecker(i, j):
 def grad_Eo(q: ti.template()):
     for i in range(1, 4):
         g = ti.Vector.zero(float, 3)
+        g += q[i] * (q[i].dot(q[i]) - 1)
         for j in range(1, 4):
-            g += (q[i].dot(q[j]) - kronecker(i, j)) * q[j]
+            if j != i:
+                g += q[j].dot(q[i]) * q[j]
         grad_field[i] = 4 * kappa * g
 
+# @ti.kernel
+# def grad_Eo(q: ti.template()):
+#     for i in range(1, 4):
+#         g = ti.Vector.zero(float, 3)
+#         for j in range(1, 4):
+#             g += (q[i].dot(q[j]) - kronecker(i, j)) * q[j]
+#         grad_field[i] = 4 * kappa * g
+
+
+# @ti.kernel
+# def hess_Eo(q: ti.template()):
+#     for i, j in ti.ndrange((1, 4), (1, 4)):
+#         h = (q[j].dot(q[i]) - kronecker(i, j)) * ti.Matrix.identity(float, 3)
+#         for k in range(1, 4):
+#             h += (q[i] * kronecker(k, j) + q[k] *
+#                   kronecker(i, j)) @ q[k].transpose()
+
+#         hess_field[i, j] = 4 * kappa * h
 
 @ti.kernel
 def hess_Eo(q: ti.template()):
     for i, j in ti.ndrange((1, 4), (1, 4)):
-        h = (q[j].dot(q[i]) - kronecker(i, j)) * ti.Matrix.identity(float, 3)
-        for k in range(1, 4):
-            h += (q[i] * kronecker(k, j) + q[k] *
-                  kronecker(i, j)) @ q[k].transpose()
-
+        h = ti.Matrix.zero(float, 3, 3)
+        if i == j: 
+            h += 2 * (q[i] @ q[i].transpose() + (q[i].dot(q[i]) - 1) * ti.Matrix.identity(float, 3))
+            for k in range(1, 4):
+                if k != i:
+                    h += q[k] @ q[k].transpose()
+        else :
+            h += ti.Matrix.identity(float, 3) * q[j].dot(q[i]) + q[j] @ q[i].transpose()
         hess_field[i, j] = 4 * kappa * h
-
 
 @ti.kernel
 def Eo(q: ti.template()) -> float:
-    A = ti.Matrix.rows([q[1], q[2], q[3]])
-    return kappa * (A @ A.transpose() - ti.Matrix.identity(float, 3)).norm_sqr()
+    A = ti.Matrix.cols([q[1], q[2], q[3]])
+    return kappa * (A.transpose() @ A - ti.Matrix.identity(float, 3)).norm_sqr()
 
 
 @ti.data_oriented
@@ -230,48 +253,11 @@ class AffineCube(Cube):
         for c in self.children:
             c._reset()
 
-    def grad_Eo_top_down(self):
-        global globals
-        grad_Eo(self.q)
-        i0 = self.id * 12
-        gf_np = grad_field.to_numpy().reshape((1, -1))
-        globals.g[i0: i0 + 12] = gf_np
-        for c in self.children:
-            c.grad_Eo_top_down()
-
-    def hess_Eo_top_down(self):
-        global globals
-        hess_Eo(self.q)
-        i0 = self.id * 12
-        _hf_np = hess_field.to_numpy()
-        hf_np = np.zeros((12, 12), np.float64)
-        # print(_hf_np)
-        # hf_np = hf_np.reshape((12, 12))
-        for i in range(4):
-            for j in range(4):
-                hf_np[i * 3: i * 3 + 3, j * 3 : j * 3  +3] = _hf_np[i, j] 
-
-        # print(hf_np)
-        # FIXME: probably wrong shape, fixed
-        globals.H[i0: i0 + 12, i0: i0 + 12] = hf_np
-
-        for c in self.children:
-            c.hess_Eo_top_down()
-
-    def Eo_top_down(self):
-        global globals
-        E = Eo(self.q)
-        i0 = self.id
-        globals.Eo[i0] = E
-        for c in self.children:
-            c.Eo_top_down()
-        # if self.parent is None:
-        #     print(f'Eo = {globals.Eo}')
 
     @ti.kernel
     def project_vertices(self):
         for i in ti.static(range(8)):
-            A = ti.Matrix.rows([self.q[1], self.q[2], self.q[3]])
+            A = ti.Matrix.cols([self.q[1], self.q[2], self.q[3]])
             self.v_transformed[i] = A @ self.vertices[i] + self.q[0]
 
     @ti.kernel
@@ -282,7 +268,7 @@ class AffineCube(Cube):
             dq2 = ti.Vector([dq[6], dq[7], dq[8]])
             dq3 = ti.Vector([dq[9], dq[10], dq[11]])
 
-            A = ti.Matrix.rows([self.q[1] + dq1, self.q[2] + dq2, self.q[3] + dq3])
+            A = ti.Matrix.cols([self.q[1] + dq1, self.q[2] + dq2, self.q[3] + dq3])
             self.v_transformed[i] = A @ self.vertices[i] + (self.q[0] + dq0)
 
     def traverse(self, q, update_q = True, update_q_dot = True, project = True):
@@ -306,6 +292,9 @@ class AffineCube(Cube):
 # @ti.func
 c1 = 1e-4
 def line_search(dq, root, q0, grad0, q_tiled, M, idx = [], pts = [], cubes = []):
+
+    global globals
+
     def v_barrier(pt):
         d2 = ipctk.point_triangle_distance(*pt)
         # d = np.sqrt(d2)
@@ -313,6 +302,7 @@ def line_search(dq, root, q0, grad0, q_tiled, M, idx = [], pts = [], cubes = [])
 
     def Vb(q0, q_tiled, M, cubes, idx, dq = None, pts = []):
         # assert dq is not None or pts is not None, "specify at least one argument from dq and pts"
+        global globals
         e = 0.0
         if dq is not None:
             pt_dq(dq, cubes)
@@ -363,7 +353,6 @@ def assemble_q_q_dot(cubes):
     for c in cubes:
         _q = c.q.to_numpy().reshape((1, -1))
         _q_dot = c.q_dot.to_numpy().reshape((1, -1))
-
         q[0, c.id * 12: (c.id + 1) * 12] = _q
         q_dot[0, c.id * 12: (c.id + 1) * 12] = _q_dot
 
@@ -618,6 +607,8 @@ def vis(dq: ti.types.ndarray(), q0: ti.types.ndarray(), display_line: ti.templat
             display_line[i * 2 + 1][k] = q0[0, i * 12 + k] + dq[0, i * 12 + k]
 
 def step(cubes, M, V_inv):
+    global globals
+    
     f = np.zeros((n_dof))
     q, q_dot = assemble_q_q_dot(cubes)
     q0 = np.copy(q)
@@ -629,10 +620,12 @@ def step(cubes, M, V_inv):
     while do_iter:
         q, q_dot = assemble_q_q_dot(cubes)
         Eo_differentials(cubes)
-        grad = V_inv.T @ (globals.g.reshape((-1, 1)) *
-                            dt ** 2 + M @ (q - q_tiled).T)
+        # grad = V_inv.T @ (globals.g.reshape((-1, 1)) *
+        #                     dt ** 2 + M @ (q - q_tiled).T)
 
-        hess = V_inv.T @ (globals.H * dt ** 2 + M) @ V_inv
+        # hess = V_inv.T @ (globals.H * dt ** 2 + M) @ V_inv
+        grad = globals.g.reshape((-1, 1)) * dt ** 2 + M @ (q - q_tiled).T
+        hess = globals.H * dt ** 2 + M
 
         grad0 = np.copy(grad)
         ipc_term(hess, grad, pts, idx, cubes)
@@ -641,13 +634,13 @@ def step(cubes, M, V_inv):
         _, _, dz, _ = dsysv(hess[m: , m:], grad[m :])
         dz = -dz
         dz = np.hstack([np.zeros((1, m), np.float64), dz.reshape(1, -1)])
-        dq = dz @ V_inv.T
+        dq = dz #@ V_inv.T
         if trace:
             print(f'dq shape = {dq.shape}')
             print(f'hess shape = {hess.shape}')
             print(f'grad shape = {grad.shape}')
         
-        print("norm(dq) = ", np.max(np.abs(dq)))
+        print(f"norm(dq) = {np.max(np.abs(dq))}, grad = {np.linalg.norm(grad)}")
         
         
         dq = dq.reshape((1 , -1)) 
@@ -665,7 +658,7 @@ def step(cubes, M, V_inv):
             traverse(cubes, q, update_q=True, update_q_dot= False, project=False)
         else:
             alpha = line_search(dq, cubes, q, grad, q_tiled, M, idx, pts, cubes)
-            print(f'line search: alpha = {alpha}')
+            print(f'line search: alpha = {alpha}, grad = {np.linalg.norm(grad)}')
 
             q += dq * alpha
 
@@ -745,7 +738,7 @@ def main():
     camera_pos = np.array([0.0, 0.0, 3.0])
     camera_dir = np.array([0.0, 0.0, -1.0])
 
-    _root = AffineCube(0, omega=[0., 0., 0.], mass = 1e3)
+    _root = AffineCube(0, omega=[10., 0., 0.], mass = mass)
     pos = [0., -1., 1.] if hinge else [-1., -1., -1.] if not centered else [-0.5, -0.5, -0.5]
     pos2 = [1.1, 0.8, 0.8] if not articulated else [0., -2., 2.]
     vc2 = [-2.0, 0.0, 0.0]
@@ -754,15 +747,15 @@ def main():
         pos[2] += 0.01 * 0.9
         # pos = [0.0, 100.0, 0.0]
     link = None if n_cubes < 2 else AffineCube(
-        1, omega=[0., 0., 0.], pos=pos, parent=_root if articulated else None, mass = 1e3)
+        1, omega=[-10., 0., 0.], pos=pos, parent=_root if articulated else None, mass = mass)
 
     link2 = None if n_cubes < 3 else AffineCube(
-        2, omega=[0., 0., 0.], pos=pos2, vc=vc2, parent=link if articulated else None, mass=1e3)
+        2, omega=[0., 0., 0.], pos=pos2, vc=vc2, parent=link if articulated else None, mass=mass)
 
     C = np.zeros((m, n_dof), np.float64) if link is None else fill_C(
         1, 0, -link.r_lk_hat.to_numpy(), link.r_pkl_hat.to_numpy())
     
-    root = [_root] if articulated else [_root, link]
+    root = [_root] if articulated or link is None else [_root, link]
     if link2 is not None and not articulated:
         root.append(link2)
     if hinge and link is not None:
