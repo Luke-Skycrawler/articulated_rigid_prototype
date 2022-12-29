@@ -725,7 +725,7 @@ class Cube:
             c.reset()
 
     def mesh(self, scene):
-        scene.mesh(self.v_transformed, self.indices, two_sided=True, show_wireframe=False)
+        scene.mesh(self.v_transformed, self.indices, two_sided=True, show_wireframe=True)
         for c in self.children:
             c.mesh(scene)
             
